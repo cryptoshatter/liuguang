@@ -4,7 +4,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { AppCtx, type Ctx, type PanelSpec, type View } from "./ctx";
 import { api, errText, type ChatMsg, type MailSummary } from "./lib/api";
 import { preamble, type Profile } from "./lib/claude";
-import { dayKindLabel } from "./lib/calendar";
+import { dayKindLabel, isWorkday } from "./lib/calendar";
+import { ensureNotify, notify } from "./lib/notify";
 import { JOIN_DATE, ONBOARDING_ITEMS } from "./lib/onboarding";
 import { WD, dayKey, daysBetween, minutesOf, pad, parseDay } from "./lib/time";
 import { useToday } from "./today";
@@ -72,6 +73,7 @@ export default function App() {
 
   useEffect(() => {
     api.settingsAll().then(setSettings);
+    ensureNotify().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -148,6 +150,24 @@ export default function App() {
       window.clearInterval(t);
     };
   }, [refreshMail]);
+
+  const reminded = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!isWorkday(now)) return;
+    const slots: [string, number, string, string][] = [
+      ["in1", 535, "punch_in:", "快 9 点了，记得上班打卡"],
+      ["in2", 545, "punch_in:", "上班卡还没记，打了的话在流光里点一下「记一下」"],
+      ["out1", 1080, "punch_out:", "18:00 了，记得下班打卡"],
+      ["out2", 1090, "punch_out:", "下班卡还没记，打了的话在流光里点一下「记一下」"],
+    ];
+    for (const [id, at, key, body] of slots) {
+      const k = today + id;
+      if (nowMin >= at && nowMin < at + 10 && !settings[key + today] && !reminded.current[k]) {
+        reminded.current[k] = true;
+        notify(body);
+      }
+    }
+  }, [nowMin, today, settings]);
 
   const markSeen = useCallback((uid: number) => setMails((ms) => ms.map((m) => (m.uid === uid ? { ...m, seen: true } : m))), []);
 

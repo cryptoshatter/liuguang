@@ -45,6 +45,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState { conn: Mutex::new(conn), data_dir: dir })
         .manage(StartupError(err))
         .setup(move |app| {
