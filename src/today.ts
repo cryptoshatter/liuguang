@@ -94,7 +94,7 @@ export function useToday(today: string, nowMin: number) {
       .map((t) => fmt(t.start!) + "–" + fmt(t.end!) + " " + t.title)
       .join("\n");
 
-  const overNote = (over: Task[]) => (over.length ? "\n今天放不下：" + over.map((t) => t.title).join("、") + "，明天早上会出现在待选里。" : "");
+  const overNote = (over: Task[]) => (over.length ? "\n顺到明天：" + over.map((t) => t.title).join("、") : "");
 
   const toggle = async (id: string) => {
     const t = tasks.find((x) => x.id === id);
@@ -123,7 +123,7 @@ export function useToday(today: string, nowMin: number) {
     const r = await runReflow([...tasks, t], q.pm ? Math.max(base, PM_START) : base);
     const placed = r.tasks.find((x) => x.id === t.id);
     const rest = r.over.filter((x) => x.id !== t.id);
-    return (placed ? `加好了：「${t.title}」排在 ${fmt(placed.start!)}–${fmt(placed.end!)}。` : `「${t.title}」今天放不下了，明天早上会出现在待选里。`) + overNote(rest);
+    return (placed ? `「${t.title}」${fmt(placed.start!)}–${fmt(placed.end!)}。` : `「${t.title}」今天放不下，顺到明天。`) + overNote(rest);
   };
 
   const addText = (text: string) => addQuick(parseQuick(text));
@@ -131,7 +131,7 @@ export function useToday(today: string, nowMin: number) {
   const reflowNow = async () => {
     const r = await runReflow(tasks);
     const lines = planLines(r.tasks);
-    return (lines ? `没做完的从 ${fmt(base)} 往后排好了：\n${lines}` : "没有需要顺延的任务。") + overNote(r.over);
+    return (lines ? `已顺延：\n${lines}` : "没有要顺延的。") + overNote(r.over);
   };
 
   const ensureLog = (list: Task[]) => {
@@ -167,7 +167,7 @@ export function useToday(today: string, nowMin: number) {
     setPlanned(true);
     const s = await api.dayState(today);
     setTasks(s.tasks);
-    return { picked: [...seq, ...missing], text: "排好了：\n" + planLines(r.tasks) + overNote(r.over) + "\n有新任务，或者到点没做完，告诉我再重排。" };
+    return { picked: [...seq, ...missing], text: planLines(r.tasks) + overNote(r.over) };
   };
 
   const replan = async () => {

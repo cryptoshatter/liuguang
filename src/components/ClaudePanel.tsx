@@ -27,7 +27,7 @@ export default function ClaudePanel({ chat, panel, onClose }: Props) {
 
   const askToday = async (label: string, extra: string) => {
     const raw = await ask(label, `今天的时间流：\n${taskLines(t.tasks)}\n\n${PLAN_PROTOCOL}\n\n${extra}`, {
-      show: (r) => splitJson(r).text || "好的，已经调整。",
+      show: (r) => splitJson(r).text || "已调整。",
     });
     if (!raw) return;
     const { json } = splitJson(raw);
@@ -57,7 +57,7 @@ export default function ClaudePanel({ chat, panel, onClose }: Props) {
     setPlanning(true);
     try {
       const r = await t.confirmPlan();
-      await say("今天做这些：" + r.picked.map((c) => c.title).join("、") + "\n\n" + r.text);
+      await say(r.text);
     } finally {
       setPlanning(false);
     }
@@ -71,7 +71,7 @@ export default function ClaudePanel({ chat, panel, onClose }: Props) {
       const list = picked.map((c) => `- id=${c.id} ${c.title}（${c.src}，预估 ${c.minutes} 分钟）`).join("\n");
       const raw = await ask(
         "帮我排一下今天的顺序和时长",
-        `今天要做的项目任务：\n${list}\n\n请按优先级排好顺序，给每项一个合理的时长（分钟，10 的倍数），一句话说明理由。最后附 json 代码块：{"order":[{"id":"任务id","minutes":60}]}，必须包含上面全部 id。`,
+        `今天要做的项目任务：\n${list}\n\n请按优先级排好顺序，给每项一个合理的时长（分钟，10 的倍数），不用解释。最后附 json 代码块：{"order":[{"id":"任务id","minutes":60}]}，必须包含上面全部 id。`,
         { show: (r) => splitJson(r).text },
       );
       if (!raw) return;
@@ -108,7 +108,7 @@ export default function ClaudePanel({ chat, panel, onClose }: Props) {
       {t.loaded && !t.planned && (
         <div className="plan">
           <span className="who ai">Claude</span>
-          <div className="ai-text">早上好。今天做哪些？没做完的和待办在下面，勾上要做的，也可以再补。点时长可以改。</div>
+          <div className="ai-text">今天做哪些？</div>
           <div className="cands">
             {t.cands.length === 0 && <div className="muted small pad-y">还没有待办，在下面补一项。</div>}
             {t.cands.map((c) => (

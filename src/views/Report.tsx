@@ -80,7 +80,7 @@ export default function Report() {
     const raw = await ask(
       "帮我润色这份周报",
       `下面是我要通过微信发给${profile.leader}的周报，只写本周完成的工作。请润色成简洁、得体的一条微信消息：保留开头称呼，用编号列出完成事项，不要加学习进度、下周计划、需协助等分节，不要编造没有的内容。只输出润色后的全文，放在一个 text 代码块里。\n\n${text}`,
-      { show: () => "润色好了，已经替换到周报里。不满意可以点「重新生成」。" },
+      { show: () => "已替换。" },
     );
     if (!raw) return;
     const m = raw.match(/```(?:text)?\s*([\s\S]*?)```/);

@@ -73,7 +73,7 @@ export default function Mail() {
     const raw = await ask(
       "帮我回复这封邮件",
       `帮我起草一封回信，语气正式简短，署名${profile.name}。只输出正文，放在一个 text 代码块里。\n\n原邮件\n发件人：${detail.fromName} <${detail.fromAddr}>\n主题：${detail.subject}\n正文：\n${redact(detail.text).slice(0, 4000)}`,
-      { show: () => "回信草稿放进回复框了，看一下没问题就可以发。" },
+      { show: () => "草稿已放进回复框。" },
     );
     if (!raw) return;
     const m = raw.match(/```(?:text)?\s*([\s\S]*?)```/);

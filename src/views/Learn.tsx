@@ -41,7 +41,7 @@ export default function Learn() {
       `我在学「${STAGES[current].name}」，这阶段的内容：${STAGES[current].topics.join("、")}。本周目标：${goals
         .filter((g) => g.stage === current)
         .map((g) => g.title)
-        .join("、")}。用银行业务场景（客户、账户、交易、网点）出 5 道由浅到深的练习题，只出题不给答案，最后说一句做完发给我批改。`,
+        .join("、")}。用银行业务场景（客户、账户、交易、网点）出 5 道由浅到深的练习题，只出题不给答案。`,
     );
 
   const goalsFromPlan = async () => {
@@ -50,7 +50,7 @@ export default function Learn() {
     const raw = await ask(
       "按学习计划拆出本周目标",
       `这是项目经理给我的学习计划：\n${plan}\n\n我现在在第 ${current + 1} 阶段「${STAGES[current].name}」。从计划里拆出本周要完成的 3 到 6 个具体目标，每个目标一行，以「- 」开头，不要别的内容。`,
-      { show: (r) => "本周目标加好了：\n" + r.trim() },
+      { show: (r) => "已加入本周目标：\n" + r.trim() },
     );
     if (!raw) return;
     const lines = raw
