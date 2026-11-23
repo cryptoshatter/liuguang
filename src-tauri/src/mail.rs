@@ -785,3 +785,15 @@ mod tests {
         println!("{}", e);
     }
 }
+
+#[cfg(test)]
+mod charset_tests {
+    use mail_parser::MessageParser;
+    #[test]
+    fn gbk() {
+        let raw = b"Subject: =?GB2312?B?suLK1NPKvP4=?=\r\nFrom: =?gbk?B?1cXI/Q==?= <a@b.c>\r\nContent-Type: text/plain; charset=gbk\r\nContent-Transfer-Encoding: base64\r\n\r\nxOO6ww==\r\n";
+        let m = MessageParser::default().parse(&raw[..]).unwrap();
+        assert_eq!(m.subject(), Some("测试邮件"));
+        assert_eq!(m.body_text(0).unwrap(), "你好");
+    }
+}
