@@ -192,7 +192,7 @@ fn tls_wrap(host: &str, port: u16, s: TcpStream, insecure: bool) -> Result<Strea
         .map_err(|e| format!("能连上 {}:{}，但 SSL 加密握手失败（{}）。这个端口可能不是 SSL，换 STARTTLS 或不加密试试；如果现在不在公司网络（比如用手机热点），也可能是公司只对内网开放邮箱，连公司网络再试", host, port, e))
 }
 
-fn read_line(s: &mut TcpStream) -> Result<String, String> {
+fn read_line<R: Read>(s: &mut R) -> Result<String, String> {
     let mut out = Vec::new();
     let mut b = [0u8; 1];
     loop {
@@ -207,43 +207,52 @@ fn read_line(s: &mut TcpStream) -> Result<String, String> {
     }
 }
 
-fn imap_stream(host: &str, port: u16, security: &str, insecure: bool) -> Result<(imap::Client<Stream>, bool), String> {
+fn expect_tagged<S: Read>(s: &mut S, tag: &str) -> Result<String, String> {
+    loop {
+        let l = read_line(s)?;
+        if l.starts_with(&format!("{} ", tag)) {
+            return Ok(l.trim().to_string());
+        }
+    }
+}
+
+fn imap_stream(host: &str, port: u16, security: &str, insecure: bool) -> Result<imap::Client<Stream>, String> {
     let mut s = tcp(host, port)?;
-    match security {
-        "ssl" => Ok((imap::Client::new(tls_wrap(host, port, s, insecure)?), false)),
+    let mut stream = match security {
+        "ssl" => tls_wrap(host, port, s, insecure)?,
         "starttls" => {
             let greet = read_line(&mut s)?;
             if !greet.starts_with("* OK") && !greet.starts_with("* PREAUTH") {
                 return Err(format!("{}:{} 不像 IMAP 服务（{}）", host, port, greet.trim()));
             }
             s.write_all(b"lg0 STARTTLS\r\n").map_err(|e| e.to_string())?;
-            loop {
-                let l = read_line(&mut s)?;
-                if l.starts_with("lg0 OK") {
-                    break;
-                }
-                if l.starts_with("lg0 ") {
-                    return Err(format!("服务器不支持 STARTTLS（{}）", l.trim()));
-                }
+            let r = expect_tagged(&mut s, "lg0")?;
+            if !r.starts_with("lg0 OK") {
+                return Err(format!("服务器不支持 STARTTLS（{}）", r));
             }
-            Ok((imap::Client::new(tls_wrap(host, port, s, insecure)?), true))
+            tls_wrap(host, port, s, insecure)?
         }
-        _ => Ok((imap::Client::new(Stream::Plain(s)), false)),
+        _ => Stream::Plain(s),
+    };
+    if security != "starttls" {
+        let greet = read_line(&mut stream)
+            .map_err(|e| format!("连上了 {}:{}，但没收到 IMAP 欢迎信息（{}）。端口或加密方式可能不对", host, port, e))?;
+        if !greet.starts_with("* OK") && !greet.starts_with("* PREAUTH") {
+            return Err(format!("{}:{} 不像 IMAP 服务（{}）", host, port, greet.trim()));
+        }
     }
+    stream
+        .write_all(b"lg1 ID (\"name\" \"liuguang\" \"version\" \"0.1\")\r\n")
+        .map_err(|e| e.to_string())?;
+    expect_tagged(&mut stream, "lg1")?;
+    Ok(imap::Client::new(stream))
 }
 
 fn imap_login(host: &str, port: u16, security: &str, insecure: bool, login: &str, pass: &str) -> Result<Imap, String> {
-    let (mut client, greeted) = imap_stream(host, port, security, insecure)?;
-    if !greeted {
-        client
-            .read_greeting()
-            .map_err(|e| format!("连上了 {}:{}，但没收到 IMAP 欢迎信息（{}）。端口或加密方式可能不对", host, port, e))?;
-    }
-    let mut s = client.login(login, pass).map_err(|(e, _)| {
-        format!("服务器连上了，但登录被拒绝（{}）。检查密码；登录名可以试试 xiao.he 和完整邮箱地址两种", e)
-    })?;
-    let _ = s.run_command_and_check_ok("ID (\"name\" \"liuguang\" \"version\" \"0.1\")");
-    Ok(s)
+    let client = imap_stream(host, port, security, insecure)?;
+    client.login(login, pass).map_err(|(e, _)| {
+        format!("服务器连上了，但登录被拒绝（{}）", e)
+    })
 }
 
 fn connect(cfg: &MailConfig) -> Result<Imap, String> {
@@ -290,6 +299,21 @@ fn sec_name(s: &str) -> &'static str {
     }
 }
 
+fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> tauri::async_runtime::JoinHandle<Result<T, String>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|p| {
+            let msg = p
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            Err(format!("邮件服务器的回应无法识别（{}）", msg.replace('\n', " ")))
+        })
+    })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectResult {
@@ -300,13 +324,7 @@ pub struct DetectResult {
 }
 
 fn imap_reach(host: &str, port: u16, sec: &str, insecure: bool) -> Result<(), String> {
-    let (mut client, greeted) = imap_stream(host, port, sec, insecure)?;
-    if !greeted {
-        client
-            .read_greeting()
-            .map_err(|e| format!("连上了，但没收到 IMAP 欢迎信息（{}）", e))?;
-    }
-    Ok(())
+    imap_stream(host, port, sec, insecure).map(|_| ())
 }
 
 fn smtp_reach(host: &str, port: u16, sec: &str, insecure: bool) -> Result<(), String> {
@@ -468,7 +486,7 @@ fn detect_blocking(mut cfg: MailConfig) -> Result<DetectResult, String> {
 #[tauri::command]
 pub async fn mail_detect(state: State<'_, AppState>) -> Result<DetectResult, String> {
     let cfg = load_config(&state)?;
-    let r = tauri::async_runtime::spawn_blocking(move || detect_blocking(cfg))
+    let r = blocking(move || detect_blocking(cfg))
         .await
         .map_err(|e| e.to_string())??;
     save_config(&state, &r.config)?;
@@ -535,7 +553,7 @@ fn list_blocking(cfg: MailConfig, limit: u32) -> Result<Vec<MailSummary>, String
 #[tauri::command]
 pub async fn mail_list(state: State<'_, AppState>, limit: Option<u32>) -> Result<Vec<MailSummary>, String> {
     let cfg = load_config(&state)?;
-    tauri::async_runtime::spawn_blocking(move || list_blocking(cfg, limit.unwrap_or(60)))
+    blocking(move || list_blocking(cfg, limit.unwrap_or(60)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -611,7 +629,7 @@ fn get_blocking(cfg: MailConfig, uid: u32) -> Result<MailDetail, String> {
 #[tauri::command]
 pub async fn mail_get(state: State<'_, AppState>, uid: u32) -> Result<MailDetail, String> {
     let cfg = load_config(&state)?;
-    tauri::async_runtime::spawn_blocking(move || get_blocking(cfg, uid))
+    blocking(move || get_blocking(cfg, uid))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -642,7 +660,7 @@ fn save_attachment_blocking(cfg: MailConfig, uid: u32, index: usize) -> Result<S
 #[tauri::command]
 pub async fn mail_save_attachment(state: State<'_, AppState>, uid: u32, index: usize) -> Result<String, String> {
     let cfg = load_config(&state)?;
-    tauri::async_runtime::spawn_blocking(move || save_attachment_blocking(cfg, uid, index))
+    blocking(move || save_attachment_blocking(cfg, uid, index))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -724,7 +742,7 @@ fn send_blocking(cfg: MailConfig, o: Outgoing) -> Result<(), String> {
 #[tauri::command]
 pub async fn mail_send(state: State<'_, AppState>, mail: Outgoing) -> Result<(), String> {
     let cfg = load_config(&state)?;
-    tauri::async_runtime::spawn_blocking(move || send_blocking(cfg, mail))
+    blocking(move || send_blocking(cfg, mail))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -732,7 +750,7 @@ pub async fn mail_send(state: State<'_, AppState>, mail: Outgoing) -> Result<(),
 #[tauri::command]
 pub async fn mail_test(state: State<'_, AppState>) -> Result<String, String> {
     let cfg = load_config(&state)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let mut s = connect(&cfg).map_err(|e| format!("收信：{}", e))?;
         let mb = s.select("INBOX").map_err(|e| format!("收信：打开收件箱失败（{}）", e))?;
         let _ = s.logout();
@@ -753,6 +771,8 @@ mod tests {
     #[ignore]
     fn fake_server_modes() {
         let mut s = imap_login("127.0.0.1", 14300, "plain", true, "u", "secret").unwrap();
+        s.select("INBOX").ok();
+        s.noop().unwrap();
         let _ = s.logout();
         let mut s = imap_login("127.0.0.1", 14300, "starttls", true, "u", "secret").unwrap();
         let _ = s.logout();
