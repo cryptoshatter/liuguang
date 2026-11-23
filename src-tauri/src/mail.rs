@@ -189,7 +189,7 @@ fn tls_wrap(host: &str, port: u16, s: TcpStream, insecure: bool) -> Result<Strea
     tls_connector(insecure)?
         .connect(host, s)
         .map(Stream::Tls)
-        .map_err(|e| format!("能连上 {}:{}，但 SSL 加密握手失败（{}）。这个端口可能不是 SSL，换 STARTTLS 或不加密试试", host, port, e))
+        .map_err(|e| format!("能连上 {}:{}，但 SSL 加密握手失败（{}）。这个端口可能不是 SSL，换 STARTTLS 或不加密试试；如果现在不在公司网络（比如用手机热点），也可能是公司只对内网开放邮箱，连公司网络再试", host, port, e))
 }
 
 fn read_line(s: &mut TcpStream) -> Result<String, String> {
@@ -349,6 +349,9 @@ fn detect_blocking(mut cfg: MailConfig) -> Result<DetectResult, String> {
                 Err(e) => log.push(format!("✗ 发信 {}:{} {}：{}", h, port, sec_name(sec), e)),
             }
         }
+    }
+    if !imap_ok && !smtp_ok && !log.iter().any(|l| l.contains("登录被拒绝")) {
+        log.push("所有组合都连不通。如果现在用的是手机热点或家里网络，很可能公司邮箱只对内网开放，请连公司网络或 VPN 后再点一次自动检测。".into());
     }
     Ok(DetectResult { ok: imap_ok && smtp_ok, log, config: cfg })
 }
