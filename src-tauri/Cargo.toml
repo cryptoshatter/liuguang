@@ -35,7 +35,5 @@ keyring = { version = "3", features = ["apple-native"] }
 keyring = { version = "3", features = ["sync-secret-service"] }
 
 [profile.release]
-codegen-units = 1
-lto = true
 opt-level = "s"
 strip = true
