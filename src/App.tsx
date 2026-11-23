@@ -211,7 +211,14 @@ export default function App() {
             <button type="button" className="link" onClick={() => openUrl(LINKS[0].url)}>
               禅道<span>↗</span>
             </button>
-            <button type="button" className="link" onClick={() => setPunchTip((x) => !x)}>
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                setPunchTip(true);
+                openUrl("weixin://").catch(() => undefined);
+              }}
+            >
               打卡<span>↗</span>
             </button>
             {LINKS.slice(1).map((l) => (
@@ -220,7 +227,7 @@ export default function App() {
                 <span>↗</span>
               </button>
             ))}
-            {punchTip && <div className="punch-tip">微信「信雅达数字化管理平台」› 打卡</div>}
+            {punchTip && <div className="punch-tip">已打开微信：「信雅达数字化管理平台」公众号 › 打卡</div>}
             <button type="button" className={"link settings-link" + (view === "settings" ? " on" : "")} onClick={() => setView("settings")}>
               设置<span>›</span>
             </button>
