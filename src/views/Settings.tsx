@@ -1,0 +1,212 @@
+import { useEffect, useState } from "react";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { getVersion } from "@tauri-apps/api/app";
+import { useApp, usePanel } from "../ctx";
+import { api, errText, type DataInfo, type MailConfig } from "../lib/api";
+import { WD, parseDay } from "../lib/time";
+
+async function buildMarkdown(leader: string) {
+  const [tasks, notes] = await Promise.all([api.tasksRange("0000-00-00", "9999-99-99"), api.notesRange("0000-00-00", "9999-99-99")]);
+  const days = Array.from(new Set([...tasks.filter((t) => t.done && t.kind === "work").map((t) => t.day!), ...notes.map((n) => n.day)])).sort();
+  const out: string[] = ["# 工作日志", ""];
+  for (const d of days) {
+    out.push(`## ${d} ${WD[parseDay(d).getDay()]}`, "");
+    tasks.filter((t) => t.day === d && t.done && t.kind === "work").forEach((t) => out.push("- " + t.title));
+    notes.filter((n) => n.day === d).forEach((n) => out.push("- " + n.text));
+    out.push("");
+  }
+  const weeks = Array.from(new Set(days.map((d) => {
+    const x = parseDay(d);
+    const m = new Date(x.getFullYear(), x.getMonth(), x.getDate() - ((x.getDay() + 6) % 7));
+    return m.getFullYear() + "-" + String(m.getMonth() + 1).padStart(2, "0") + "-" + String(m.getDate()).padStart(2, "0");
+  })));
+  const reports: string[] = [];
+  for (const w of weeks) {
+    const r = await api.reportGet(w);
+    if (r) reports.push(`## ${w} 当周`, "", r, "");
+  }
+  if (reports.length) out.push(`# 周报（致 ${leader}）`, "", ...reports);
+  return out.join("\n");
+}
+
+const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
+  <label className="field">
+    <span className="field-label">{label}</span>
+    {children}
+  </label>
+);
+
+export default function Settings() {
+  const { settings, setSetting, toast, profile, refreshMail } = useApp();
+  const [cfg, setCfg] = useState<MailConfig | null>(null);
+  const [pw, setPw] = useState("");
+  const [mailMsg, setMailMsg] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [info, setInfo] = useState<DataInfo | null>(null);
+  const [claude, setClaude] = useState<{ found: boolean; path: string | null } | null>(null);
+  const [claudePath, setClaudePath] = useState(settings.claude_path ?? "");
+  const [version, setVersion] = useState("");
+  const [names, setNames] = useState({ user: profile.name, leader: profile.leader, project: profile.project });
+
+  usePanel({ chips: [] }, []);
+
+  useEffect(() => {
+    api.mailConfig().then((c) => setCfg({ ...c, address: c.address || "xiao.he@sunyard.com", login: c.login || c.address || "xiao.he@sunyard.com", name: c.name || profile.name }));
+    api.dataInfo().then(setInfo);
+    api.claudeStatus().then(setClaude);
+    getVersion().then(setVersion);
+  }, []);
+
+  const saveMail = async (test: boolean) => {
+    if (!cfg) return;
+    setMailMsg(null);
+    try {
+      await api.mailSaveConfig(cfg, pw || null);
+      setPw("");
+      const c = await api.mailConfig();
+      setCfg(c);
+      if (test) {
+        setTesting(true);
+        const n = await api.mailTest();
+        setMailMsg(`连接成功，收件箱有 ${n} 封邮件。`);
+        refreshMail();
+      } else setMailMsg("已保存。");
+    } catch (e) {
+      setMailMsg("※ " + errText(e));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const saveClaude = async () => {
+    await setSetting("claude_path", claudePath.trim());
+    setClaude(await api.claudeStatus());
+  };
+
+  const exportAll = async () => {
+    try {
+      const md = await buildMarkdown(profile.leader);
+      const dir = await api.exportAll(md);
+      toast("已导出到 文稿/流光导出");
+      revealItemInDir(dir);
+    } catch (e) {
+      toast(errText(e));
+    }
+  };
+
+  const backup = async () => {
+    try {
+      await api.backupNow();
+      setInfo(await api.dataInfo());
+      toast("已备份");
+    } catch (e) {
+      toast(errText(e));
+    }
+  };
+
+  return (
+    <div className="settings">
+      <section className="set-sec">
+        <h2>个人</h2>
+        <div className="fields">
+          <Field label="我的名字">
+            <input className="line-input" value={names.user} onChange={(e) => setNames({ ...names, user: e.target.value })} onBlur={() => setSetting("user_name", names.user.trim())} />
+          </Field>
+          <Field label="周报发给">
+            <input className="line-input" value={names.leader} onChange={(e) => setNames({ ...names, leader: e.target.value })} onBlur={() => setSetting("leader_name", names.leader.trim())} />
+          </Field>
+          <Field label="所在项目">
+            <input className="line-input" value={names.project} onChange={(e) => setNames({ ...names, project: e.target.value })} onBlur={() => setSetting("project_name", names.project.trim())} />
+          </Field>
+        </div>
+      </section>
+
+      <section className="set-sec">
+        <h2>公司邮箱</h2>
+        {cfg && (
+          <>
+            <div className="fields">
+              <Field label="邮箱地址">
+                <input className="line-input" value={cfg.address} onChange={(e) => setCfg({ ...cfg, address: e.target.value })} />
+              </Field>
+              <Field label="登录名">
+                <input className="line-input" value={cfg.login} onChange={(e) => setCfg({ ...cfg, login: e.target.value })} />
+              </Field>
+              <Field label="发件人名字">
+                <input className="line-input" value={cfg.name} onChange={(e) => setCfg({ ...cfg, name: e.target.value })} />
+              </Field>
+              <Field label={cfg.hasPassword ? "密码（已存钥匙串）" : "密码"}>
+                <input className="line-input" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder={cfg.hasPassword ? "不改就留空" : ""} />
+              </Field>
+              <Field label="收信服务器 IMAP">
+                <div className="pair">
+                  <input className="line-input" value={cfg.imapHost} onChange={(e) => setCfg({ ...cfg, imapHost: e.target.value })} />
+                  <input className="line-input port" value={cfg.imapPort} onChange={(e) => setCfg({ ...cfg, imapPort: Number(e.target.value) || 0 })} />
+                </div>
+              </Field>
+              <Field label="发信服务器 SMTP">
+                <div className="pair">
+                  <input className="line-input" value={cfg.smtpHost} onChange={(e) => setCfg({ ...cfg, smtpHost: e.target.value })} />
+                  <input className="line-input port" value={cfg.smtpPort} onChange={(e) => setCfg({ ...cfg, smtpPort: Number(e.target.value) || 0 })} />
+                </div>
+              </Field>
+            </div>
+            <label className="checkline small">
+              <input type="checkbox" checked={cfg.insecure} onChange={(e) => setCfg({ ...cfg, insecure: e.target.checked })} />
+              信任公司服务器的自签名证书
+            </label>
+            <div className="row-btns">
+              <button type="button" className="btn solid" onClick={() => saveMail(true)} disabled={testing}>
+                {testing ? "连接中" : "保存并测试"}
+              </button>
+              <button type="button" className="btn ghost" onClick={() => saveMail(false)}>
+                只保存
+              </button>
+            </div>
+            {mailMsg && <div className={"small" + (mailMsg.startsWith("※") ? " red" : " ink2")}>{mailMsg}</div>}
+          </>
+        )}
+      </section>
+
+      <section className="set-sec">
+        <h2>Claude</h2>
+        <div className="small">{claude == null ? "检测中" : claude.found ? "已找到：" + claude.path : "没找到本机的 Claude Code"}</div>
+        <div className="fields">
+          <Field label="claude 路径">
+            <input className="line-input" value={claudePath} onChange={(e) => setClaudePath(e.target.value)} placeholder="留空自动查找" />
+          </Field>
+        </div>
+        <div className="row-btns">
+          <button type="button" className="btn ghost" onClick={saveClaude}>
+            保存并检测
+          </button>
+        </div>
+      </section>
+
+      <section className="set-sec">
+        <h2>数据</h2>
+        {info && (
+          <div className="small lh">
+            <div className="mono">{info.dataDir}</div>
+            <div className="ink2">
+              备份 {info.backups} 份{info.lastBackup ? " · 最近 " + info.lastBackup : ""}
+            </div>
+          </div>
+        )}
+        <div className="row-btns">
+          <button type="button" className="btn ghost" onClick={backup}>
+            立即备份
+          </button>
+          <button type="button" className="btn ghost" onClick={() => info && revealItemInDir(info.dataDir + "/liuguang.db")}>
+            打开数据文件夹
+          </button>
+          <button type="button" className="btn ghost" onClick={exportAll}>
+            导出 Markdown 和 JSON
+          </button>
+        </div>
+      </section>
+
+      <div className="mono tiny ink2">流光 {version}</div>
+    </div>
+  );
+}
