@@ -89,7 +89,7 @@ export default function Settings() {
       const r = await api.mailDetect();
       setDetectLog(r.log);
       setCfg({ ...r.config, hasPassword: true });
-      setMailMsg(r.ok ? "找到能用的设置，已经保存。" : "※ 没有全部找到，详情见下面。把这段截图发给 Claude 可以帮你继续排查。");
+      setMailMsg(r.ok ? r.summary : "※ " + r.summary);
       if (r.ok) refreshMail();
     } catch (e) {
       setMailMsg("※ " + errText(e));

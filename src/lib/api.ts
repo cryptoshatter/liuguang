@@ -76,7 +76,7 @@ export const api = {
   mailSend: (mail: { to: string[]; cc: string[]; subject: string; body: string; inReplyTo: string | null; references: string[] }) =>
     invoke<void>("mail_send", { mail }),
   mailTest: () => invoke<string>("mail_test"),
-  mailDetect: () => invoke<{ ok: boolean; log: string[]; config: MailConfig }>("mail_detect"),
+  mailDetect: () => invoke<{ ok: boolean; summary: string; log: string[]; config: MailConfig }>("mail_detect"),
 };
 
 export const errText = (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));

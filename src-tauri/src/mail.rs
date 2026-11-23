@@ -277,6 +277,7 @@ fn smtp_check(host: &str, port: u16, security: &str, insecure: bool, login: &str
     match t.test_connection() {
         Ok(true) => Ok(()),
         Ok(false) => Err(format!("{}:{} 没有正常回应 SMTP", host, port)),
+        Err(e) if e.to_string().contains("535") => Err(format!("服务器连上了，但登录被拒绝（{}）", e)),
         Err(e) => Err(format!("{}:{} SMTP 握手失败（{}）", host, port, e)),
     }
 }
@@ -293,13 +294,50 @@ fn sec_name(s: &str) -> &'static str {
 #[serde(rename_all = "camelCase")]
 pub struct DetectResult {
     ok: bool,
+    summary: String,
     log: Vec<String>,
     config: MailConfig,
+}
+
+fn imap_reach(host: &str, port: u16, sec: &str, insecure: bool) -> Result<(), String> {
+    let (mut client, greeted) = imap_stream(host, port, sec, insecure)?;
+    if !greeted {
+        client
+            .read_greeting()
+            .map_err(|e| format!("连上了，但没收到 IMAP 欢迎信息（{}）", e))?;
+    }
+    Ok(())
+}
+
+fn smtp_reach(host: &str, port: u16, sec: &str, insecure: bool) -> Result<(), String> {
+    tcp(host, port)?;
+    let params = TlsParameters::builder(host.to_string())
+        .set_min_tls_version(TlsVersion::Tlsv10)
+        .dangerous_accept_invalid_certs(insecure)
+        .dangerous_accept_invalid_hostnames(insecure)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mode = match sec {
+        "ssl" => Tls::Wrapper(params),
+        "starttls" => Tls::Required(params),
+        _ => Tls::None,
+    };
+    let t = SmtpTransport::builder_dangerous(host)
+        .port(port)
+        .tls(mode)
+        .timeout(Some(Duration::from_secs(15)))
+        .build();
+    match t.test_connection() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("没有正常回应 SMTP".into()),
+        Err(e) => Err(format!("SMTP 握手失败（{}）", e)),
+    }
 }
 
 fn detect_blocking(mut cfg: MailConfig) -> Result<DetectResult, String> {
     let pass = password(&cfg.login)?;
     let domain = cfg.address.split('@').nth(1).unwrap_or("sunyard.com").to_string();
+    let user = cfg.address.split('@').next().unwrap_or("").to_string();
     let mut log = Vec::new();
     let uniq = |v: Vec<String>| {
         let mut out: Vec<String> = Vec::new();
@@ -310,50 +348,121 @@ fn detect_blocking(mut cfg: MailConfig) -> Result<DetectResult, String> {
         }
         out
     };
-    let imap_hosts = uniq(vec![cfg.imap_host.clone(), format!("mail.{}", domain), format!("imap.{}", domain)]);
-    let smtp_hosts = uniq(vec![cfg.smtp_host.clone(), format!("mail.{}", domain), format!("smtp.{}", domain)]);
-    let mut imap_ok = false;
+    let imap_hosts = uniq(vec![cfg.imap_host.clone(), format!("imap.{}", domain), format!("mail.{}", domain)]);
+    let smtp_hosts = uniq(vec![cfg.smtp_host.clone(), format!("smtp.{}", domain), format!("mail.{}", domain)]);
+
+    let mut imap_found = None;
     'imap: for h in &imap_hosts {
         for (port, sec) in [(993u16, "ssl"), (143, "starttls"), (143, "plain")] {
-            match imap_login(h, port, sec, cfg.insecure, &cfg.login, &pass) {
-                Ok(mut s) => {
-                    let _ = s.logout();
-                    log.push(format!("✓ 收信 {}:{} {} 登录成功", h, port, sec_name(sec)));
-                    cfg.imap_host = h.clone();
-                    cfg.imap_port = port;
-                    cfg.imap_security = sec.into();
-                    imap_ok = true;
+            match imap_reach(h, port, sec, cfg.insecure) {
+                Ok(()) => {
+                    log.push(format!("✓ 收信 {}:{} {} 能连通", h, port, sec_name(sec)));
+                    imap_found = Some((h.clone(), port, sec));
                     break 'imap;
                 }
-                Err(e) => {
-                    log.push(format!("✗ 收信 {}:{} {}：{}", h, port, sec_name(sec), e));
-                    if e.contains("登录被拒绝") {
-                        break 'imap;
-                    }
-                }
+                Err(e) => log.push(format!("✗ 收信 {}:{} {}：{}", h, port, sec_name(sec), e)),
             }
         }
     }
-    let mut smtp_ok = false;
+    let mut smtp_found = None;
     'smtp: for h in &smtp_hosts {
         for (port, sec) in [(465u16, "ssl"), (587, "starttls"), (25, "starttls"), (25, "plain")] {
-            match smtp_check(h, port, sec, cfg.insecure, &cfg.login, &pass) {
+            match smtp_reach(h, port, sec, cfg.insecure) {
                 Ok(()) => {
-                    log.push(format!("✓ 发信 {}:{} {} 可以连通", h, port, sec_name(sec)));
-                    cfg.smtp_host = h.clone();
-                    cfg.smtp_port = port;
-                    cfg.smtp_security = sec.into();
-                    smtp_ok = true;
+                    log.push(format!("✓ 发信 {}:{} {} 能连通", h, port, sec_name(sec)));
+                    smtp_found = Some((h.clone(), port, sec));
                     break 'smtp;
                 }
                 Err(e) => log.push(format!("✗ 发信 {}:{} {}：{}", h, port, sec_name(sec), e)),
             }
         }
     }
-    if !imap_ok && !smtp_ok && !log.iter().any(|l| l.contains("登录被拒绝")) {
-        log.push("所有组合都连不通。如果现在用的是手机热点或家里网络，很可能公司邮箱只对内网开放，请连公司网络或 VPN 后再点一次自动检测。".into());
+    if let Some((h, p, sec)) = &imap_found {
+        cfg.imap_host = h.clone();
+        cfg.imap_port = *p;
+        cfg.imap_security = sec.to_string();
     }
-    Ok(DetectResult { ok: imap_ok && smtp_ok, log, config: cfg })
+    if let Some((h, p, sec)) = &smtp_found {
+        cfg.smtp_host = h.clone();
+        cfg.smtp_port = *p;
+        cfg.smtp_security = sec.to_string();
+    }
+    if imap_found.is_none() && smtp_found.is_none() {
+        return Ok(DetectResult {
+            ok: false,
+            summary: "收信和发信服务器都连不通。如果现在用的是手机热点或家里网络，可能公司邮箱只对内网开放，连公司网络或 VPN 后再检测一次。".into(),
+            log,
+            config: cfg,
+        });
+    }
+
+    let logins = uniq(vec![cfg.login.clone(), cfg.address.clone(), user]);
+    let mut imap_login_ok: Option<String> = None;
+    let mut last_imap_err = String::new();
+    if let Some((h, p, sec)) = &imap_found {
+        for l in logins.iter().take(2) {
+            match imap_login(h, *p, sec, cfg.insecure, l, &pass) {
+                Ok(mut s) => {
+                    let _ = s.logout();
+                    log.push(format!("✓ 收信用 {} 登录成功", l));
+                    imap_login_ok = Some(l.clone());
+                    break;
+                }
+                Err(e) => {
+                    log.push(format!("✗ 收信用 {} 登录：{}", l, e));
+                    last_imap_err = e;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(800));
+        }
+    }
+    let mut smtp_login_ok: Option<String> = None;
+    let mut last_smtp_err = String::new();
+    if let Some((h, p, sec)) = &smtp_found {
+        let order: Vec<String> = match &imap_login_ok {
+            Some(l) => vec![l.clone()],
+            None => logins.iter().take(2).cloned().collect(),
+        };
+        for l in order {
+            match smtp_check(h, *p, sec, cfg.insecure, &l, &pass) {
+                Ok(()) => {
+                    log.push(format!("✓ 发信用 {} 登录成功", l));
+                    smtp_login_ok = Some(l);
+                    break;
+                }
+                Err(e) => {
+                    log.push(format!("✗ 发信用 {} 登录：{}", l, e));
+                    last_smtp_err = e;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(800));
+        }
+    }
+    if let Some(l) = imap_login_ok.clone().or(smtp_login_ok.clone()) {
+        if l != cfg.login {
+            keyring_entry(&l)?.set_password(&pass).map_err(|e| format!("写入钥匙串失败：{}", e))?;
+            cfg.login = l;
+        }
+    }
+
+    let ok = imap_login_ok.is_some() && smtp_login_ok.is_some();
+    let summary = if ok {
+        format!("找到了：收信 {}:{}，发信 {}:{}，登录名 {}。已经保存。", cfg.imap_host, cfg.imap_port, cfg.smtp_host, cfg.smtp_port, cfg.login)
+    } else if imap_found.is_some() && imap_login_ok.is_none() && (smtp_found.is_none() || smtp_login_ok.is_none()) && !last_imap_err.is_empty() {
+        format!(
+            "服务器能连上（收信 {}:{}），但登录被拒绝，两种登录名都试过了。最常见的原因：网页邮箱里还没开启 IMAP/SMTP 服务，或者需要单独的客户端授权码；也可能密码已经改过。去网页邮箱「设置」里找「客户端设置 / POP3/IMAP/SMTP」开启，有授权码就把授权码填进密码框。注意别短时间反复检测，服务器会限制登录频率。",
+            cfg.imap_host, cfg.imap_port
+        )
+    } else if imap_found.is_none() {
+        "发信服务器能连上，但收信服务器连不通。可能公司只对内网开放 IMAP，连公司网络再试。".into()
+    } else if smtp_found.is_none() {
+        "收信正常，但发信服务器连不通。可能公司只对内网开放 SMTP，连公司网络再试。".into()
+    } else if imap_login_ok.is_some() {
+        format!("收信登录成功，但发信登录被拒绝（{}）。可能要在网页邮箱里单独开启 SMTP。", last_smtp_err)
+    } else {
+        format!("发信登录成功，但收信登录被拒绝（{}）。可能要在网页邮箱里单独开启 IMAP。", last_imap_err)
+    };
+    Ok(DetectResult { ok, summary, log, config: cfg })
 }
 
 #[tauri::command]
@@ -362,9 +471,7 @@ pub async fn mail_detect(state: State<'_, AppState>) -> Result<DetectResult, Str
     let r = tauri::async_runtime::spawn_blocking(move || detect_blocking(cfg))
         .await
         .map_err(|e| e.to_string())??;
-    if r.log.iter().any(|l| l.starts_with('✓')) {
-        save_config(&state, &r.config)?;
-    }
+    save_config(&state, &r.config)?;
     Ok(r)
 }
 
