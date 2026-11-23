@@ -249,6 +249,17 @@ export default function Settings() {
         </div>
       </section>
 
+      <label className="checkline small">
+        <input
+          type="checkbox"
+          checked={settings.auto_update === "1"}
+          onChange={async (e) => {
+            await setSetting("auto_update", e.target.checked ? "1" : "0");
+            if (e.target.checked) window.dispatchEvent(new Event("lg-auto-update"));
+          }}
+        />
+        自动更新
+      </label>
       <div className="row-btns">
         <span className="mono tiny ink2">流光 {version}</span>
         <button

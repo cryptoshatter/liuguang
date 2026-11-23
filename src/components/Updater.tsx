@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { errText } from "../lib/api";
+import { useApp } from "../ctx";
 
 type State = { kind: "idle" } | { kind: "ready"; update: Update } | { kind: "loading"; pct: number | null } | { kind: "error"; msg: string };
 
@@ -11,20 +12,33 @@ export async function findUpdate() {
 
 export default function Updater() {
   const [st, setSt] = useState<State>({ kind: "idle" });
+  const { settings } = useApp();
+  const auto = useRef(false);
+  auto.current = settings.auto_update === "1";
+  const installed = useRef<string | null>(null);
 
   useEffect(() => {
     const run = () =>
       findUpdate()
-        .then((u) => u && setSt((s) => (s.kind === "idle" ? { kind: "ready", update: u } : s)))
+        .then(async (u) => {
+          if (!u || u.version === installed.current) return;
+          if (auto.current) {
+            await u.downloadAndInstall();
+            installed.current = u.version;
+          } else setSt((s) => (s.kind === "idle" ? { kind: "ready", update: u } : s));
+        })
         .catch(() => undefined);
     const first = window.setTimeout(run, 4000);
     const every = window.setInterval(run, 6 * 3600 * 1000);
+    const kick = () => run();
+    window.addEventListener("lg-auto-update", kick);
     const manual = (e: Event) => setSt({ kind: "ready", update: (e as CustomEvent<Update>).detail });
     window.addEventListener("lg-update", manual);
     return () => {
       window.clearTimeout(first);
       window.clearInterval(every);
       window.removeEventListener("lg-update", manual);
+      window.removeEventListener("lg-auto-update", kick);
     };
   }, []);
 
