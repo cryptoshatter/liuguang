@@ -48,7 +48,7 @@ jobs:
           owner: cryptoshatter
           repo: liuguang-releases
           tagName: v${{ env.APP_VERSION }}
-          commitish: main
+          releaseCommitish: main
           releaseName: 流光 ${{ env.APP_VERSION }}
           releaseBody: 在流光里点「更新」即可；手动安装就把 dmg 里的流光拖进「应用程序」覆盖旧版，数据不受影响。
           releaseDraft: false
