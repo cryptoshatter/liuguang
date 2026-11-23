@@ -6,7 +6,7 @@ import { api, errText, type ChatMsg, type MailSummary } from "./lib/api";
 import { preamble, type Profile } from "./lib/claude";
 import { dayKindLabel, isWorkday } from "./lib/calendar";
 import { ensureNotify, notify } from "./lib/notify";
-import { JOIN_DATE, ONBOARDING_ITEMS } from "./lib/onboarding";
+import { JOIN_DATE, ONBOARDING_DEFAULT_DONE, ONBOARDING_ITEMS } from "./lib/onboarding";
 import { WD, dayKey, daysBetween, minutesOf, pad, parseDay } from "./lib/time";
 import { useToday } from "./today";
 import ClaudePanel from "./components/ClaudePanel";
@@ -81,7 +81,7 @@ export default function App() {
   }, [today]);
 
   useEffect(() => {
-    api.onboardingState().then(setObState);
+    api.onboardingState().then((s) => setObState({ ...ONBOARDING_DEFAULT_DONE, ...s }));
   }, [obVersion]);
 
   const toast = useCallback((s: string) => {

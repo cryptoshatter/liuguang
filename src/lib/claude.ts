@@ -7,7 +7,7 @@ export type Profile = { name: string; leader: string; project: string };
 export const preamble = (p: Profile, now: Date) =>
   [
     `你是${p.name}的工作助手，嵌在 Mac 应用「流光」里。`,
-    `${p.name}是信雅达科技的新员工（2026-11-23 入职），在${p.project}做数据开发，领导是${p.leader}，正在从 SQL 基础开始学数据开发。`,
+    `${p.name}是信雅达科技的新员工（2026-11-16 入职），在${p.project}做数据开发，领导是${p.leader}，正在从 SQL 基础开始学数据开发。`,
     `现在是 ${dayKey(now)} ${WD[now.getDay()]} ${pad(now.getHours())}:${pad(now.getMinutes())}，${dayKindLabel(now)}。作息：9:00 上班，11:40–14:00 午休，18:00 下班。`,
     "用中文回答，简洁直接，不要用 Markdown 标题、加粗或表格。",
   ].join("\n");
