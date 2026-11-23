@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
+import { findUpdate } from "../components/Updater";
 import { useApp, usePanel } from "../ctx";
 import { api, errText, type DataInfo, type MailConfig } from "../lib/api";
 import { WD, parseDay } from "../lib/time";
@@ -248,7 +249,24 @@ export default function Settings() {
         </div>
       </section>
 
-      <div className="mono tiny ink2">流光 {version}</div>
+      <div className="row-btns">
+        <span className="mono tiny ink2">流光 {version}</span>
+        <button
+          type="button"
+          className="text-btn"
+          onClick={async () => {
+            try {
+              const u = await findUpdate();
+              if (u) window.dispatchEvent(new CustomEvent("lg-update", { detail: u }));
+              else toast("已经是最新版");
+            } catch (e) {
+              toast("检查更新失败：" + errText(e));
+            }
+          }}
+        >
+          检查更新
+        </button>
+      </div>
     </div>
   );
 }

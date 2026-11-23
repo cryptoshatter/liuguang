@@ -4,9 +4,10 @@
 
 ## 安装与更新
 
-1. 打开仓库的 Actions 页面，进入最新一次「打包 macOS」，下载 `liuguang-dmg`；打了 `v*` 标签的版本也会出现在 Releases 里。
-2. 解压得到 `.dmg`，把「流光」拖进「应用程序」。更新时同样拖进去覆盖。
-3. 应用没有苹果签名，第一次打开会被拦下：到「系统设置 › 隐私与安全性」底部点「仍要打开」。
+1. 推送到 main 后，Actions 打包并把签名过的安装包发布到公开仓库 `cryptoshatter/liuguang-releases`。
+2. 首次安装：从 liuguang-releases 的 Releases 下载 `.dmg`，把「流光」拖进「应用程序」。应用没有苹果签名，第一次打开要到「系统设置 › 隐私与安全性」点「仍要打开」。
+3. 之后流光启动时会检查新版本，弹窗点「更新」即可，设置页也能手动检查。
+4. 发布需要私有仓库里有两个 secret：`RELEASES_TOKEN`（对 liuguang-releases 有 Contents 读写权限的令牌）和 `TAURI_SIGNING_PRIVATE_KEY`（更新签名私钥，公钥在 `tauri.conf.json`）。缺少时只打包不发布。
 
 ## 数据
 

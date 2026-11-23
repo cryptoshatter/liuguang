@@ -10,6 +10,7 @@ import { JOIN_DATE, ONBOARDING_DEFAULT_DONE, ONBOARDING_ITEMS } from "./lib/onbo
 import { WD, dayKey, daysBetween, minutesOf, pad, parseDay } from "./lib/time";
 import { useToday } from "./today";
 import ClaudePanel from "./components/ClaudePanel";
+import Updater from "./components/Updater";
 import Today from "./views/Today";
 import Calendar from "./views/Calendar";
 import Report from "./views/Report";
@@ -274,6 +275,7 @@ export default function App() {
         </main>
 
         {claudeOpen && <ClaudePanel chat={chat} panel={panel} onClose={() => setClaudeOpen(false)} />}
+        <Updater />
         {toastText && <div className="toast">{toastText}</div>}
       </div>
     </AppCtx.Provider>

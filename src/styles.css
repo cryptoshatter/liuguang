@@ -1438,3 +1438,17 @@ textarea.ruled {
   flex-direction: column;
   gap: 12px;
 }
+
+.updater {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 90;
+  background: var(--paper);
+  border: 1.5px solid var(--ink);
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 200px;
+}
