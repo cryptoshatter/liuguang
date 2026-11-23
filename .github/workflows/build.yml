@@ -39,26 +39,33 @@ jobs:
           node -e 'const f="src-tauri/tauri.conf.json";const c=require("./"+f);c.version=process.argv[1];require("fs").writeFileSync(f,JSON.stringify(c,null,2)+"\n")' "$V"
           echo "APP_VERSION=$V" >> "$GITHUB_ENV"
 
-      - name: 打包并发布到 liuguang-releases
-        if: env.RELEASES_TOKEN != '' && env.TAURI_SIGNING_PRIVATE_KEY != ''
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
-        with:
-          owner: cryptoshatter
-          repo: liuguang-releases
-          tagName: v${{ env.APP_VERSION }}
-          releaseCommitish: main
-          releaseName: 流光 ${{ env.APP_VERSION }}
-          releaseBody: 在流光里点「更新」即可；手动安装就把 dmg 里的流光拖进「应用程序」覆盖旧版，数据不受影响。
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
-          args: --target universal-apple-darwin
+      - name: 打包
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npx tauri build --target universal-apple-darwin
+          else
+            npx tauri build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          fi
 
-      - name: 只打包（还没配置发布密钥）
-        if: env.RELEASES_TOKEN == '' || env.TAURI_SIGNING_PRIVATE_KEY == ''
-        run: npx tauri build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: 发布到 liuguang-releases
+        if: env.RELEASES_TOKEN != '' && env.TAURI_SIGNING_PRIVATE_KEY != ''
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          B=src-tauri/target/universal-apple-darwin/release/bundle
+          V="$APP_VERSION"
+          R=cryptoshatter/liuguang-releases
+          mkdir -p rel
+          cp "$B"/dmg/*.dmg "rel/liuguang_${V}_universal.dmg"
+          cp "$B"/macos/*.app.tar.gz rel/liuguang_universal.app.tar.gz
+          SIG=$(cat "$B"/macos/*.app.tar.gz.sig)
+          URL="https://github.com/$R/releases/download/v$V/liuguang_universal.app.tar.gz"
+          node -e '
+            const [v,sig,url]=process.argv.slice(1);
+            const p={signature:sig,url};
+            require("fs").writeFileSync("rel/latest.json",JSON.stringify({version:v,notes:"",pub_date:new Date().toISOString(),platforms:{"darwin-aarch64":p,"darwin-x86_64":p,"darwin-universal":p}},null,2));
+          ' "$V" "$SIG" "$URL"
+          gh release create "v$V" rel/* -R "$R" --target main --title "流光 $V" --notes "在流光里点「更新」即可；手动安装就把 dmg 里的流光拖进「应用程序」覆盖旧版，数据不受影响。"
 
       - name: 整理产物
         run: |
