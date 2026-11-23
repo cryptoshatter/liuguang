@@ -4,30 +4,84 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      runner:
+        description: 打包机器
+        type: choice
+        options: [auto, macmini, github]
+        default: auto
 
 permissions:
   contents: read
 
+concurrency:
+  group: build-macos
+  cancel-in-progress: false
+
 jobs:
+  pick:
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.p.outputs.runner }}
+    steps:
+      - id: p
+        env:
+          CHOICE: ${{ inputs.runner || 'auto' }}
+          MAC_RUNNER: ${{ vars.MAC_RUNNER }}
+          GH_TOKEN: ${{ secrets.RUNNER_CHECK_TOKEN }}
+        run: |
+          use=github
+          if [ "$CHOICE" = macmini ]; then
+            use=macmini
+          elif [ "$CHOICE" = auto ]; then
+            if [ -n "$GH_TOKEN" ]; then
+              n=$(gh api "repos/${{ github.repository }}/actions/runners" --jq '[.runners[]|select(.status=="online")|select(any(.labels[];.name=="macmini"))]|length' || echo 0)
+              [ "${n:-0}" -gt 0 ] && use=macmini
+            elif [ "$MAC_RUNNER" = macmini ]; then
+              use=macmini
+            fi
+          fi
+          echo "runner=$use" >> "$GITHUB_OUTPUT"
+          echo "打包机器：$use" >> "$GITHUB_STEP_SUMMARY"
+
   build:
-    runs-on: macos-latest
+    needs: pick
+    runs-on: ${{ needs.pick.outputs.runner == 'macmini' && fromJSON('["self-hosted","macmini"]') || 'macos-latest' }}
     env:
+      SELF_HOSTED: ${{ needs.pick.outputs.runner == 'macmini' }}
       RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
     steps:
       - uses: actions/checkout@v4
 
+      - name: 本机缓存目录
+        if: env.SELF_HOSTED == 'true'
+        run: |
+          echo "CARGO_TARGET_DIR=$HOME/.liuguang-build/target" >> "$GITHUB_ENV"
+          rm -rf "$HOME/.liuguang-build/target/universal-apple-darwin/release/bundle"
+          if ! command -v gh >/dev/null; then
+            d="$HOME/.liuguang-build/gh"
+            if [ ! -x "$d/bin/gh" ]; then
+              a=$([ "$(uname -m)" = arm64 ] && echo arm64 || echo amd64)
+              v=2.62.0
+              mkdir -p "$d" && curl -fsSL "https://github.com/cli/cli/releases/download/v$v/gh_${v}_macOS_${a}.zip" -o /tmp/gh.zip
+              unzip -oq /tmp/gh.zip -d /tmp/ghx && cp -R /tmp/ghx/gh_${v}_macOS_${a}/bin "$d/" && rm -rf /tmp/gh.zip /tmp/ghx
+            fi
+            echo "$d/bin" >> "$GITHUB_PATH"
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: ${{ env.SELF_HOSTED == 'true' && '' || 'npm' }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
+        if: env.SELF_HOSTED != 'true'
         with:
           workspaces: src-tauri
 
@@ -52,7 +106,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
-          B=src-tauri/target/universal-apple-darwin/release/bundle
+          B="${CARGO_TARGET_DIR:-src-tauri/target}/universal-apple-darwin/release/bundle"
           V="$APP_VERSION"
           R=cryptoshatter/liuguang-releases
           mkdir -p rel
@@ -70,7 +124,7 @@ jobs:
       - name: 整理产物
         run: |
           mkdir -p out
-          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg out/
+          cp "${CARGO_TARGET_DIR:-src-tauri/target}"/universal-apple-darwin/release/bundle/dmg/*.dmg out/
           ls -la out
 
       - uses: actions/upload-artifact@v4
