@@ -42,6 +42,7 @@ export default function Settings() {
   const [pw, setPw] = useState("");
   const [mailMsg, setMailMsg] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  const [detectLog, setDetectLog] = useState<string[]>([]);
   const [info, setInfo] = useState<DataInfo | null>(null);
   const [claude, setClaude] = useState<{ found: boolean; path: string | null } | null>(null);
   const [claudePath, setClaudePath] = useState(settings.claude_path ?? "");
@@ -67,10 +68,29 @@ export default function Settings() {
       setCfg(c);
       if (test) {
         setTesting(true);
-        const n = await api.mailTest();
-        setMailMsg(`连接成功，收件箱有 ${n} 封邮件。`);
+        setMailMsg(await api.mailTest());
         refreshMail();
       } else setMailMsg("已保存。");
+    } catch (e) {
+      setMailMsg("※ " + errText(e));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const detect = async () => {
+    if (!cfg) return;
+    setMailMsg(null);
+    setDetectLog([]);
+    setTesting(true);
+    try {
+      await api.mailSaveConfig(cfg, pw || null);
+      setPw("");
+      const r = await api.mailDetect();
+      setDetectLog(r.log);
+      setCfg({ ...r.config, hasPassword: true });
+      setMailMsg(r.ok ? "找到能用的设置，已经保存。" : "※ 没有全部找到，详情见下面。把这段截图发给 Claude 可以帮你继续排查。");
+      if (r.ok) refreshMail();
     } catch (e) {
       setMailMsg("※ " + errText(e));
     } finally {
@@ -142,12 +162,22 @@ export default function Settings() {
                 <div className="pair">
                   <input className="line-input" value={cfg.imapHost} onChange={(e) => setCfg({ ...cfg, imapHost: e.target.value })} />
                   <input className="line-input port" value={cfg.imapPort} onChange={(e) => setCfg({ ...cfg, imapPort: Number(e.target.value) || 0 })} />
+                  <select className="line-input sec" value={cfg.imapSecurity} onChange={(e) => setCfg({ ...cfg, imapSecurity: e.target.value })} aria-label="收信加密方式">
+                    <option value="ssl">SSL</option>
+                    <option value="starttls">STARTTLS</option>
+                    <option value="plain">不加密</option>
+                  </select>
                 </div>
               </Field>
               <Field label="发信服务器 SMTP">
                 <div className="pair">
                   <input className="line-input" value={cfg.smtpHost} onChange={(e) => setCfg({ ...cfg, smtpHost: e.target.value })} />
                   <input className="line-input port" value={cfg.smtpPort} onChange={(e) => setCfg({ ...cfg, smtpPort: Number(e.target.value) || 0 })} />
+                  <select className="line-input sec" value={cfg.smtpSecurity} onChange={(e) => setCfg({ ...cfg, smtpSecurity: e.target.value })} aria-label="发信加密方式">
+                    <option value="ssl">SSL</option>
+                    <option value="starttls">STARTTLS</option>
+                    <option value="plain">不加密</option>
+                  </select>
                 </div>
               </Field>
             </div>
@@ -159,11 +189,23 @@ export default function Settings() {
               <button type="button" className="btn solid" onClick={() => saveMail(true)} disabled={testing}>
                 {testing ? "连接中" : "保存并测试"}
               </button>
+              <button type="button" className="btn ghost" onClick={detect} disabled={testing}>
+                自动检测
+              </button>
               <button type="button" className="btn ghost" onClick={() => saveMail(false)}>
                 只保存
               </button>
             </div>
             {mailMsg && <div className={"small" + (mailMsg.startsWith("※") ? " red" : " ink2")}>{mailMsg}</div>}
+            {detectLog.length > 0 && (
+              <div className="detect-log mono tiny">
+                {detectLog.map((l, i) => (
+                  <div key={i} className={l.startsWith("✓") ? "" : "ink2"}>
+                    {l}
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
       </section>

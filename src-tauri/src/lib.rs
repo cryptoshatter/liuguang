@@ -96,6 +96,7 @@ pub fn run() {
             mail::mail_save_attachment,
             mail::mail_send,
             mail::mail_test,
+            mail::mail_detect,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

@@ -22,8 +22,10 @@ export type MailConfig = {
   name: string;
   imapHost: string;
   imapPort: number;
+  imapSecurity: string;
   smtpHost: string;
   smtpPort: number;
+  smtpSecurity: string;
   insecure: boolean;
   hasPassword: boolean;
 };
@@ -73,7 +75,8 @@ export const api = {
   mailSaveAttachment: (uid: number, index: number) => invoke<string>("mail_save_attachment", { uid, index }),
   mailSend: (mail: { to: string[]; cc: string[]; subject: string; body: string; inReplyTo: string | null; references: string[] }) =>
     invoke<void>("mail_send", { mail }),
-  mailTest: () => invoke<number>("mail_test"),
+  mailTest: () => invoke<string>("mail_test"),
+  mailDetect: () => invoke<{ ok: boolean; log: string[]; config: MailConfig }>("mail_detect"),
 };
 
 export const errText = (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));

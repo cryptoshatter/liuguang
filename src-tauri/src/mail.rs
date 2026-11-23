@@ -2,11 +2,13 @@ use crate::{db, AppState};
 use lettre::message::header::ContentType;
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
-use lettre::transport::smtp::client::{Tls, TlsParameters};
+use lettre::transport::smtp::client::{Tls, TlsParameters, TlsVersion};
 use lettre::{Message, SmtpTransport, Transport};
 use mail_parser::{MessageParser, MimeHeaders};
 use serde::{Deserialize, Serialize};
-use std::net::TcpStream;
+use std::io::{ErrorKind, Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
 use tauri::State;
 
 const SERVICE: &str = "流光";
@@ -19,8 +21,10 @@ pub struct MailConfig {
     name: String,
     imap_host: String,
     imap_port: u16,
+    imap_security: String,
     smtp_host: String,
     smtp_port: u16,
+    smtp_security: String,
     insecure: bool,
     has_password: bool,
 }
@@ -33,6 +37,15 @@ fn password(account: &str) -> Result<String, String> {
     keyring_entry(account)?
         .get_password()
         .map_err(|_| "还没有保存邮箱密码，请在设置里填写。".to_string())
+}
+
+fn default_security(port: u16, imap: bool) -> String {
+    match (imap, port) {
+        (true, 993) | (false, 465) => "ssl",
+        (true, 143) | (false, 587) | (false, 25) => "starttls",
+        _ => "ssl",
+    }
+    .to_string()
 }
 
 fn load_config(state: &State<'_, AppState>) -> Result<MailConfig, String> {
@@ -48,19 +61,43 @@ fn load_config(state: &State<'_, AppState>) -> Result<MailConfig, String> {
         if v.is_empty() { "mail.sunyard.com".to_string() } else { v }
     };
     let port_or = |k: &str, d: u16| g(k).parse::<u16>().unwrap_or(d);
+    let imap_port = port_or("mail_imap_port", 993);
+    let smtp_port = port_or("mail_smtp_port", 465);
+    let sec_or = |k: &str, port: u16, imap: bool| {
+        let v = g(k);
+        if ["ssl", "starttls", "plain"].contains(&v.as_str()) { v } else { default_security(port, imap) }
+    };
     let has_password = !login.is_empty()
         && keyring_entry(&login).and_then(|e| e.get_password().map_err(|e| e.to_string())).is_ok();
     Ok(MailConfig {
         name: g("mail_name"),
         imap_host: host_or("mail_imap_host"),
-        imap_port: port_or("mail_imap_port", 993),
+        imap_security: sec_or("mail_imap_security", imap_port, true),
+        imap_port,
         smtp_host: host_or("mail_smtp_host"),
-        smtp_port: port_or("mail_smtp_port", 465),
+        smtp_security: sec_or("mail_smtp_security", smtp_port, false),
+        smtp_port,
         insecure: g("mail_insecure") == "1",
         address,
         login,
         has_password,
     })
+}
+
+fn save_config(state: &State<'_, AppState>, config: &MailConfig) -> Result<(), String> {
+    let c = state.conn.lock().map_err(|e| e.to_string())?;
+    let s = |k: &str, v: &str| db::set_setting(&c, k, v).map_err(|e| e.to_string());
+    s("mail_address", config.address.trim())?;
+    s("mail_login", config.login.trim())?;
+    s("mail_name", config.name.trim())?;
+    s("mail_imap_host", config.imap_host.trim())?;
+    s("mail_imap_port", &config.imap_port.to_string())?;
+    s("mail_imap_security", &config.imap_security)?;
+    s("mail_smtp_host", config.smtp_host.trim())?;
+    s("mail_smtp_port", &config.smtp_port.to_string())?;
+    s("mail_smtp_security", &config.smtp_security)?;
+    s("mail_insecure", if config.insecure { "1" } else { "0" })?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -74,18 +111,7 @@ pub fn mail_save_config(
     config: MailConfig,
     password: Option<String>,
 ) -> Result<(), String> {
-    {
-        let c = state.conn.lock().map_err(|e| e.to_string())?;
-        let s = |k: &str, v: &str| db::set_setting(&c, k, v).map_err(|e| e.to_string());
-        s("mail_address", config.address.trim())?;
-        s("mail_login", config.login.trim())?;
-        s("mail_name", config.name.trim())?;
-        s("mail_imap_host", config.imap_host.trim())?;
-        s("mail_imap_port", &config.imap_port.to_string())?;
-        s("mail_smtp_host", config.smtp_host.trim())?;
-        s("mail_smtp_port", &config.smtp_port.to_string())?;
-        s("mail_insecure", if config.insecure { "1" } else { "0" })?;
-    }
+    save_config(&state, &config)?;
     if let Some(p) = password.filter(|p| !p.is_empty()) {
         let login = if config.login.trim().is_empty() { config.address.trim() } else { config.login.trim() };
         keyring_entry(login)?.set_password(&p).map_err(|e| format!("写入钥匙串失败：{}", e))?;
@@ -93,22 +119,250 @@ pub fn mail_save_config(
     Ok(())
 }
 
-type Imap = imap::Session<native_tls::TlsStream<TcpStream>>;
+pub enum Stream {
+    Plain(TcpStream),
+    Tls(native_tls::TlsStream<TcpStream>),
+}
+
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Stream::Plain(s) => s.read(buf),
+            Stream::Tls(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Stream::Plain(s) => s.write(buf),
+            Stream::Tls(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Stream::Plain(s) => s.flush(),
+            Stream::Tls(s) => s.flush(),
+        }
+    }
+}
+
+type Imap = imap::Session<Stream>;
+
+fn tcp(host: &str, port: u16) -> Result<TcpStream, String> {
+    let addrs: Vec<_> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("找不到服务器 {}（{}）。检查服务器地址，或者连上公司网络 / VPN 再试", host, e))?
+        .collect();
+    let mut last = None;
+    for a in addrs {
+        match TcpStream::connect_timeout(&a, Duration::from_secs(8)) {
+            Ok(s) => {
+                let _ = s.set_read_timeout(Some(Duration::from_secs(25)));
+                let _ = s.set_write_timeout(Some(Duration::from_secs(25)));
+                return Ok(s);
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    let e = last.map(|e| e.kind());
+    Err(match e {
+        Some(ErrorKind::ConnectionRefused) => format!("{}:{} 拒绝连接，这个端口没开", host, port),
+        Some(ErrorKind::TimedOut) | Some(ErrorKind::WouldBlock) => {
+            format!("连 {}:{} 超时。可能这个端口被挡住了，或者邮箱只能在公司内网 / VPN 下用", host, port)
+        }
+        _ => format!("连不上 {}:{}", host, port),
+    })
+}
+
+fn tls_connector(insecure: bool) -> Result<native_tls::TlsConnector, String> {
+    native_tls::TlsConnector::builder()
+        .min_protocol_version(Some(native_tls::Protocol::Tlsv10))
+        .danger_accept_invalid_certs(insecure)
+        .danger_accept_invalid_hostnames(insecure)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn tls_wrap(host: &str, port: u16, s: TcpStream, insecure: bool) -> Result<Stream, String> {
+    tls_connector(insecure)?
+        .connect(host, s)
+        .map(Stream::Tls)
+        .map_err(|e| format!("能连上 {}:{}，但 SSL 加密握手失败（{}）。这个端口可能不是 SSL，换 STARTTLS 或不加密试试", host, port, e))
+}
+
+fn read_line(s: &mut TcpStream) -> Result<String, String> {
+    let mut out = Vec::new();
+    let mut b = [0u8; 1];
+    loop {
+        let n = s.read(&mut b).map_err(|e| format!("服务器没有回应：{}", e))?;
+        if n == 0 {
+            return Err("服务器断开了连接".into());
+        }
+        out.push(b[0]);
+        if b[0] == b'\n' || out.len() > 4096 {
+            return Ok(String::from_utf8_lossy(&out).to_string());
+        }
+    }
+}
+
+fn imap_stream(host: &str, port: u16, security: &str, insecure: bool) -> Result<(imap::Client<Stream>, bool), String> {
+    let mut s = tcp(host, port)?;
+    match security {
+        "ssl" => Ok((imap::Client::new(tls_wrap(host, port, s, insecure)?), false)),
+        "starttls" => {
+            let greet = read_line(&mut s)?;
+            if !greet.starts_with("* OK") && !greet.starts_with("* PREAUTH") {
+                return Err(format!("{}:{} 不像 IMAP 服务（{}）", host, port, greet.trim()));
+            }
+            s.write_all(b"lg0 STARTTLS\r\n").map_err(|e| e.to_string())?;
+            loop {
+                let l = read_line(&mut s)?;
+                if l.starts_with("lg0 OK") {
+                    break;
+                }
+                if l.starts_with("lg0 ") {
+                    return Err(format!("服务器不支持 STARTTLS（{}）", l.trim()));
+                }
+            }
+            Ok((imap::Client::new(tls_wrap(host, port, s, insecure)?), true))
+        }
+        _ => Ok((imap::Client::new(Stream::Plain(s)), false)),
+    }
+}
+
+fn imap_login(host: &str, port: u16, security: &str, insecure: bool, login: &str, pass: &str) -> Result<Imap, String> {
+    let (mut client, greeted) = imap_stream(host, port, security, insecure)?;
+    if !greeted {
+        client
+            .read_greeting()
+            .map_err(|e| format!("连上了 {}:{}，但没收到 IMAP 欢迎信息（{}）。端口或加密方式可能不对", host, port, e))?;
+    }
+    let mut s = client.login(login, pass).map_err(|(e, _)| {
+        format!("服务器连上了，但登录被拒绝（{}）。检查密码；登录名可以试试 xiao.he 和完整邮箱地址两种", e)
+    })?;
+    let _ = s.run_command_and_check_ok("ID (\"name\" \"liuguang\" \"version\" \"0.1\")");
+    Ok(s)
+}
 
 fn connect(cfg: &MailConfig) -> Result<Imap, String> {
     let pass = password(&cfg.login)?;
-    let tls = native_tls::TlsConnector::builder()
-        .danger_accept_invalid_certs(cfg.insecure)
-        .danger_accept_invalid_hostnames(cfg.insecure)
+    imap_login(&cfg.imap_host, cfg.imap_port, &cfg.imap_security, cfg.insecure, &cfg.login, &pass)
+}
+
+fn smtp_transport(host: &str, port: u16, security: &str, insecure: bool, login: &str, pass: &str) -> Result<SmtpTransport, String> {
+    let params = TlsParameters::builder(host.to_string())
+        .set_min_tls_version(TlsVersion::Tlsv10)
+        .dangerous_accept_invalid_certs(insecure)
+        .dangerous_accept_invalid_hostnames(insecure)
         .build()
         .map_err(|e| e.to_string())?;
-    let client = imap::connect((cfg.imap_host.as_str(), cfg.imap_port), cfg.imap_host.as_str(), &tls)
-        .map_err(|e| format!("连不上 {}:{}：{}", cfg.imap_host, cfg.imap_port, e))?;
-    let mut s = client
-        .login(&cfg.login, &pass)
-        .map_err(|(e, _)| format!("邮箱登录失败：{}", e))?;
-    let _ = s.run_command_and_check_ok("ID (\"name\" \"liuguang\" \"version\" \"0.1\")");
-    Ok(s)
+    let mode = match security {
+        "ssl" => Tls::Wrapper(params),
+        "starttls" => Tls::Required(params),
+        _ => Tls::None,
+    };
+    Ok(SmtpTransport::builder_dangerous(host)
+        .port(port)
+        .tls(mode)
+        .timeout(Some(Duration::from_secs(20)))
+        .credentials(Credentials::new(login.to_string(), pass.to_string()))
+        .build())
+}
+
+fn smtp_check(host: &str, port: u16, security: &str, insecure: bool, login: &str, pass: &str) -> Result<(), String> {
+    tcp(host, port)?;
+    let t = smtp_transport(host, port, security, insecure, login, pass)?;
+    match t.test_connection() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!("{}:{} 没有正常回应 SMTP", host, port)),
+        Err(e) => Err(format!("{}:{} SMTP 握手失败（{}）", host, port, e)),
+    }
+}
+
+fn sec_name(s: &str) -> &'static str {
+    match s {
+        "ssl" => "SSL",
+        "starttls" => "STARTTLS",
+        _ => "不加密",
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectResult {
+    ok: bool,
+    log: Vec<String>,
+    config: MailConfig,
+}
+
+fn detect_blocking(mut cfg: MailConfig) -> Result<DetectResult, String> {
+    let pass = password(&cfg.login)?;
+    let domain = cfg.address.split('@').nth(1).unwrap_or("sunyard.com").to_string();
+    let mut log = Vec::new();
+    let uniq = |v: Vec<String>| {
+        let mut out: Vec<String> = Vec::new();
+        for x in v {
+            if !x.is_empty() && !out.contains(&x) {
+                out.push(x);
+            }
+        }
+        out
+    };
+    let imap_hosts = uniq(vec![cfg.imap_host.clone(), format!("mail.{}", domain), format!("imap.{}", domain)]);
+    let smtp_hosts = uniq(vec![cfg.smtp_host.clone(), format!("mail.{}", domain), format!("smtp.{}", domain)]);
+    let mut imap_ok = false;
+    'imap: for h in &imap_hosts {
+        for (port, sec) in [(993u16, "ssl"), (143, "starttls"), (143, "plain")] {
+            match imap_login(h, port, sec, cfg.insecure, &cfg.login, &pass) {
+                Ok(mut s) => {
+                    let _ = s.logout();
+                    log.push(format!("✓ 收信 {}:{} {} 登录成功", h, port, sec_name(sec)));
+                    cfg.imap_host = h.clone();
+                    cfg.imap_port = port;
+                    cfg.imap_security = sec.into();
+                    imap_ok = true;
+                    break 'imap;
+                }
+                Err(e) => {
+                    log.push(format!("✗ 收信 {}:{} {}：{}", h, port, sec_name(sec), e));
+                    if e.contains("登录被拒绝") {
+                        break 'imap;
+                    }
+                }
+            }
+        }
+    }
+    let mut smtp_ok = false;
+    'smtp: for h in &smtp_hosts {
+        for (port, sec) in [(465u16, "ssl"), (587, "starttls"), (25, "starttls"), (25, "plain")] {
+            match smtp_check(h, port, sec, cfg.insecure, &cfg.login, &pass) {
+                Ok(()) => {
+                    log.push(format!("✓ 发信 {}:{} {} 可以连通", h, port, sec_name(sec)));
+                    cfg.smtp_host = h.clone();
+                    cfg.smtp_port = port;
+                    cfg.smtp_security = sec.into();
+                    smtp_ok = true;
+                    break 'smtp;
+                }
+                Err(e) => log.push(format!("✗ 发信 {}:{} {}：{}", h, port, sec_name(sec), e)),
+            }
+        }
+    }
+    Ok(DetectResult { ok: imap_ok && smtp_ok, log, config: cfg })
+}
+
+#[tauri::command]
+pub async fn mail_detect(state: State<'_, AppState>) -> Result<DetectResult, String> {
+    let cfg = load_config(&state)?;
+    let r = tauri::async_runtime::spawn_blocking(move || detect_blocking(cfg))
+        .await
+        .map_err(|e| e.to_string())??;
+    if r.log.iter().any(|l| l.starts_with('✓')) {
+        save_config(&state, &r.config)?;
+    }
+    Ok(r)
 }
 
 #[derive(Serialize)]
@@ -346,17 +600,7 @@ fn send_blocking(cfg: MailConfig, o: Outgoing) -> Result<(), String> {
         .header(ContentType::TEXT_PLAIN)
         .body(o.body.clone())
         .map_err(|e| e.to_string())?;
-    let tls = TlsParameters::builder(cfg.smtp_host.clone())
-        .dangerous_accept_invalid_certs(cfg.insecure)
-        .dangerous_accept_invalid_hostnames(cfg.insecure)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mode = if cfg.smtp_port == 465 { Tls::Wrapper(tls) } else { Tls::Required(tls) };
-    let mailer = SmtpTransport::builder_dangerous(cfg.smtp_host.as_str())
-        .port(cfg.smtp_port)
-        .tls(mode)
-        .credentials(Credentials::new(cfg.login.clone(), pass))
-        .build();
+    let mailer = smtp_transport(&cfg.smtp_host, cfg.smtp_port, &cfg.smtp_security, cfg.insecure, &cfg.login, &pass)?;
     mailer.send(&email).map_err(|e| format!("发送失败：{}", e))?;
     if let Ok(mut s) = connect(&cfg) {
         if let Some(folder) = sent_folder(&mut s) {
@@ -376,14 +620,38 @@ pub async fn mail_send(state: State<'_, AppState>, mail: Outgoing) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn mail_test(state: State<'_, AppState>) -> Result<u32, String> {
+pub async fn mail_test(state: State<'_, AppState>) -> Result<String, String> {
     let cfg = load_config(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let mut s = connect(&cfg)?;
-        let mb = s.select("INBOX").map_err(|e| e.to_string())?;
+        let mut s = connect(&cfg).map_err(|e| format!("收信：{}", e))?;
+        let mb = s.select("INBOX").map_err(|e| format!("收信：打开收件箱失败（{}）", e))?;
         let _ = s.logout();
-        Ok(mb.exists)
+        let pass = password(&cfg.login)?;
+        smtp_check(&cfg.smtp_host, cfg.smtp_port, &cfg.smtp_security, cfg.insecure, &cfg.login, &pass)
+            .map_err(|e| format!("收信正常（收件箱 {} 封），但发信不通：{}", mb.exists, e))?;
+        Ok(format!("收信和发信都通了，收件箱有 {} 封邮件。", mb.exists))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn fake_server_modes() {
+        let mut s = imap_login("127.0.0.1", 14300, "plain", true, "u", "secret").unwrap();
+        let _ = s.logout();
+        let mut s = imap_login("127.0.0.1", 14300, "starttls", true, "u", "secret").unwrap();
+        let _ = s.logout();
+        let e = imap_login("127.0.0.1", 14300, "starttls", true, "u", "wrong").err().unwrap();
+        assert!(e.contains("登录被拒绝"), "{}", e);
+        let e = imap_login("127.0.0.1", 14300, "ssl", true, "u", "secret").err().unwrap();
+        assert!(e.contains("SSL"), "{}", e);
+        let e = imap_login("127.0.0.1", 14399, "ssl", true, "u", "secret").err().unwrap();
+        assert!(e.contains("拒绝连接"), "{}", e);
+        println!("{}", e);
+    }
 }
