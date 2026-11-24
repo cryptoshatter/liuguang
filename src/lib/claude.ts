@@ -24,7 +24,7 @@ export const taskLines = (tasks: Task[]) =>
         .join("\n")
     : "（还没有任务）";
 
-export const ACTIONS_PROTOCOL = `需要改动数据时，在回答最后附一个 json 代码块 {"actions":[...]}，按顺序执行。可用动作：
+export const ACTIONS_PROTOCOL = `需要改动数据时，在回答最后附一个 \`\`\`json 代码块，内容是 {"actions":[...]}，按顺序执行；不要把动作写进正文，也不要说「已加」之类却不附代码块。可用动作：
 {"do":"task.add","title":"任务名","minutes":60,"start":"15:00","day":"YYYY-MM-DD"}  day 省略为今天；start 省略时自动排进今天的空档
 {"do":"task.edit","id":"任务id","title":"新名字","minutes":30,"start":"10:00","end":"11:00","pinned":true}  只写要改的字段
 {"do":"task.done","id":"任务id","done":true}
@@ -59,14 +59,38 @@ export type PlanActions = {
   reflow?: boolean;
 };
 
+function balanced(text: string, start: number): string | null {
+  let depth = 0;
+  let str = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (str) {
+      if (c === "\\") i++;
+      else if (c === '"') str = false;
+    } else if (c === '"') str = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return text.slice(start, i + 1);
+  }
+  return null;
+}
+
 export function splitJson(text: string): { text: string; json: unknown | null } {
   const m = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (!m) return { text: text.trim(), json: null };
-  try {
-    return { text: (text.slice(0, m.index) + text.slice(m.index! + m[0].length)).trim(), json: JSON.parse(m[1]) };
-  } catch {
-    return { text: text.trim(), json: null };
+  if (m) {
+    try {
+      return { text: (text.slice(0, m.index) + text.slice(m.index! + m[0].length)).trim(), json: JSON.parse(m[1]) };
+    } catch {}
   }
+  for (let i = text.indexOf("{"); i >= 0; i = text.indexOf("{", i + 1)) {
+    if (!/^\{\s*"/.test(text.slice(i, i + 20))) continue;
+    const body = balanced(text, i);
+    if (!body) continue;
+    try {
+      const json = JSON.parse(body);
+      if (json && typeof json === "object" && !Array.isArray(json)) return { text: (text.slice(0, i) + text.slice(i + body.length)).replace(/```\w*\s*$/, "").trim(), json };
+    } catch {}
+  }
+  return { text: text.replace(/```(?:json)?[\s\S]*$/, "").trim(), json: null };
 }
 
 export const redact = (s: string) => s.replace(/((?:初始)?密码\s*[：:]\s*)[^\s，,。；;、]+/g, "$1【已隐藏】");
