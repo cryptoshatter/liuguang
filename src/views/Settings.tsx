@@ -346,7 +346,7 @@ export default function Settings() {
       <label className="checkline small">
         <input
           type="checkbox"
-          checked={settings.auto_update === "1"}
+          checked={settings.auto_update !== "0"}
           onChange={async (e) => {
             await setSetting("auto_update", e.target.checked ? "1" : "0");
             if (e.target.checked) window.dispatchEvent(new Event("lg-auto-update"));

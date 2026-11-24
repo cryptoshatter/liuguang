@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { errText } from "../lib/api";
 import { useApp } from "../ctx";
 
 type State = { kind: "idle" } | { kind: "ready"; update: Update } | { kind: "loading"; pct: number | null } | { kind: "error"; msg: string };
+
+export const PUSH_TOPIC = "liuguang-23db30cc9289409da208";
 
 export async function findUpdate() {
   return check({ timeout: 20000 });
@@ -14,29 +17,60 @@ export default function Updater() {
   const [st, setSt] = useState<State>({ kind: "idle" });
   const { settings } = useApp();
   const auto = useRef(false);
-  auto.current = settings.auto_update === "1";
+  auto.current = settings.auto_update !== "0";
   const installed = useRef<string | null>(null);
+  const busy = useRef(false);
 
   useEffect(() => {
-    const run = () =>
-      findUpdate()
-        .then(async (u) => {
-          if (!u || u.version === installed.current) return;
-          if (auto.current) {
-            await u.downloadAndInstall();
-            installed.current = u.version;
-          } else setSt((s) => (s.kind === "idle" ? { kind: "ready", update: u } : s));
-        })
-        .catch(() => undefined);
+    let pending = false;
+    const restartWhenHidden = async () => {
+      if (!pending) return;
+      const visible = await getCurrentWindow()
+        .isVisible()
+        .catch(() => document.visibilityState === "visible");
+      if (!visible) {
+        pending = false;
+        relaunch();
+      }
+    };
+    const run = async () => {
+      if (busy.current) return;
+      busy.current = true;
+      try {
+        const u = await findUpdate();
+        if (!u || u.version === installed.current) return;
+        if (auto.current) {
+          await u.downloadAndInstall();
+          installed.current = u.version;
+          pending = true;
+          restartWhenHidden();
+        } else setSt((s) => (s.kind === "idle" ? { kind: "ready", update: u } : s));
+      } catch {
+        return;
+      } finally {
+        busy.current = false;
+      }
+    };
     const first = window.setTimeout(run, 4000);
-    const every = window.setInterval(run, 6 * 3600 * 1000);
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource(`https://ntfy.sh/${PUSH_TOPIC}/sse`);
+      es.onmessage = () => window.setTimeout(run, 3000);
+    } catch {
+      es = null;
+    }
+    const onVis = () => restartWhenHidden();
+    document.addEventListener("visibilitychange", onVis);
+    const hiddenCheck = window.setInterval(restartWhenHidden, 30000);
     const kick = () => run();
     window.addEventListener("lg-auto-update", kick);
     const manual = (e: Event) => setSt({ kind: "ready", update: (e as CustomEvent<Update>).detail });
     window.addEventListener("lg-update", manual);
     return () => {
       window.clearTimeout(first);
-      window.clearInterval(every);
+      window.clearInterval(hiddenCheck);
+      es?.close();
+      document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("lg-update", manual);
       window.removeEventListener("lg-auto-update", kick);
     };

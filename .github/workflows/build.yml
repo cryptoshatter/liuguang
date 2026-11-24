@@ -120,6 +120,7 @@ jobs:
             require("fs").writeFileSync("rel/latest.json",JSON.stringify({version:v,notes:"",pub_date:new Date().toISOString(),platforms:{"darwin-aarch64":p,"darwin-x86_64":p,"darwin-universal":p}},null,2));
           ' "$V" "$SIG" "$URL"
           gh release create "v$V" rel/* -R "$R" --target main --title "流光 $V" --notes "在流光里点「更新」即可；手动安装就把 dmg 里的流光拖进「应用程序」覆盖旧版，数据不受影响。"
+          curl -s -m 20 -d "v$V" https://ntfy.sh/liuguang-23db30cc9289409da208 || true
 
       - name: 整理产物
         run: |

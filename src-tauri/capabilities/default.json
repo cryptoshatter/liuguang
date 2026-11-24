@@ -12,6 +12,7 @@
     "opener:allow-reveal-item-in-dir",
     "clipboard-manager:allow-write-text",
     "core:window:allow-start-dragging",
+    "core:window:allow-is-visible",
     "notification:default",
     "updater:default",
     "process:allow-restart"
