@@ -610,7 +610,7 @@ fn folders_blocking(cfg: MailConfig) -> Result<Vec<MailFolder>, String> {
         out.push(MailFolder { name: n.name().to_string(), label, role: role.to_string(), unread: 0, total: 0 });
     }
     for f in out.iter_mut() {
-        if let Ok(m) = s.status(format!("\"{}\"", f.name), "(MESSAGES UNSEEN)") {
+        if let Ok(m) = s.status(&f.name, "(MESSAGES UNSEEN)") {
             f.unread = m.unseen.unwrap_or(0);
             f.total = m.exists;
         }
@@ -654,7 +654,7 @@ fn first_addr(a: Option<&mail_parser::Address>) -> (String, String) {
 }
 
 fn select(s: &mut Imap, folder: &str) -> Result<imap::types::Mailbox, String> {
-    s.select(format!("\"{}\"", folder)).map_err(|e| e.to_string())
+    s.select(folder).map_err(|e| e.to_string())
 }
 
 fn list_blocking(cfg: MailConfig, folder: String, limit: u32) -> Result<Vec<MailSummary>, String> {
@@ -897,8 +897,8 @@ fn delete_blocking(cfg: MailConfig, folder: String, uid: u32) -> Result<(), Stri
     let id = uid.to_string();
     match trash {
         Some(t) if t != folder => {
-            if s.uid_mv(&id, format!("\"{}\"", t)).is_err() {
-                s.uid_copy(&id, format!("\"{}\"", t)).map_err(|e| e.to_string())?;
+            if s.uid_mv(&id, &t).is_err() {
+                s.uid_copy(&id, &t).map_err(|e| e.to_string())?;
                 s.uid_store(&id, "+FLAGS (\\Deleted)").map_err(|e| e.to_string())?;
                 let _ = s.expunge();
             }
