@@ -48,7 +48,7 @@ export const ACTIONS_PROTOCOL = `需要改动数据时，在回答最后附一�
 {"do":"setting","key":"user_name|leader_name|project_name|join_date|about|report_head|work_start|lunch_start|lunch_end|work_end","value":"值"}
 {"do":"links.set","links":[{"label":"名字","url":"https://..."}]}
 {"do":"go","view":"today|cal|log|onboard|mail|learn|settings"}
-规则：时间流只放项目工作；日志和周报只记项目工作和学习，不写入职手续和个人事务；不编造用户没说过的工作内容；不需要改动就不附代码块。`;
+规则：时间流只放项目工作；日志和周报只记项目工作和学习，不写入职手续和个人事务；不编造用户没说过的工作内容，要补日志但不知道那天做了什么时，只问一句「那天做了什么？」；到了结束时间的任务会自动算完成；不需要改动就不附代码块。`;
 
 export type PlanActions = {
   add?: { title: string; minutes?: number; start?: string; end?: string }[];

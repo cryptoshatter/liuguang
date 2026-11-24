@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { fl, useApp } from "../ctx";
-import Check from "../components/Check";
 import { pendingOb } from "../lib/onboarding";
 import { AM_START, DAY_END, LUNCH_START, PM_START, daysBetween, dur, fmt, md, minutesOf, pad, parseDay } from "../lib/time";
 
@@ -38,9 +37,8 @@ export default function Today() {
   const workPct = Math.round((worked / (LUNCH_START - AM_START + DAY_END - PM_START)) * 100);
 
   const status = (x: (typeof t.scheduled)[number]) =>
-    x.done ? "done" : nowMin >= x.start! && nowMin < x.end! ? "now" : nowMin >= x.end! ? "late" : "todo";
+    x.done ? "done" : nowMin >= x.start! && nowMin < x.end! ? "now" : "todo";
   const cur = t.scheduled.find((x) => status(x) === "now");
-  const late = t.scheduled.filter((x) => status(x) === "late");
   const workTasks = t.tasks.filter((x) => x.kind === "work");
   const doneCount = workTasks.filter((x) => x.done).length;
 
@@ -108,20 +106,6 @@ export default function Today() {
             </button>
           </form>
         )}
-        {t.planned && late.length > 0 && (
-          <div className="late-bar">
-            <span className="grow">※ {late.map((x) => "「" + x.title + "」").join("")}已过时间还没完成</span>
-            <button
-              type="button"
-              className="text-btn red"
-              onClick={async () => {
-                await say(await t.reflowNow());
-              }}
-            >
-              顺延到后面 →
-            </button>
-          </div>
-        )}
         {!t.planned && t.loaded && <div className="muted small">在右边和 Claude 定好今天做什么，就会排进这里。</div>}
         <div className="timeline">
           <div className="seg" style={{ top: px(AM_START), height: px(LUNCH_START) - px(AM_START) }} />
@@ -148,16 +132,29 @@ export default function Today() {
           </div>
           {t.scheduled.map((x) => {
             const st = status(x);
-            const label = st === "now" ? "进行中" : st === "late" ? "已过时" : st === "todo" && x.pinned ? "固定" : "";
+            const label = st === "now" ? "进行中" : st === "todo" && x.pinned ? "固定" : "";
+            const h = px(x.end!) - px(x.start!) - 2;
+            const short = h < 50;
             return (
-              <div key={x.id} className={"block " + st + fl(flash, x.id) + (leaving.has(x.id) ? " leaving" : "")} style={{ top: px(x.start!) + 1, height: px(x.end!) - px(x.start!) - 2 }}>
-                <Check on={x.done} invert={st === "now"} onClick={() => t.toggle(x.id)} label={"切换完成：" + x.title} />
-                <span className="block-title tline">{x.title}</span>
-                <span className="block-range">
-                  {fmt(x.start!)}–{fmt(x.end!)}
-                </span>
-                {label && <span className="block-status">{label}</span>}
+              <div
+                key={x.id}
+                className={"block " + st + (short ? " short" : "") + fl(flash, x.id) + (leaving.has(x.id) ? " leaving" : "")}
+                style={{ top: px(x.start!) + 1, height: h }}
+              >
+                {st === "now" && <div className="block-ink" style={{ height: ((nowMin - x.start!) / (x.end! - x.start!)) * 100 + "%" }} />}
+                <div className="block-main">
+                  <span className="block-title tline">{x.title}</span>
+                  <span className="block-range">
+                    {fmt(x.start!)} – {fmt(x.end!)} · {dur(x.end! - x.start!)}
+                  </span>
+                </div>
+                {label && <span className={"block-status " + st}>{label}</span>}
                 <span className="block-tools">
+                  {x.done && (
+                    <button type="button" onClick={async () => say(await t.notDone(x.id))}>
+                      没做完
+                    </button>
+                  )}
                   <button type="button" onClick={() => t.togglePin(x.id)}>
                     {x.pinned ? "取消固定" : "固定"}
                   </button>
@@ -171,7 +168,9 @@ export default function Today() {
           {nowMin >= AM_START && nowMin <= DAY_END && (
             <div className="now-line" style={{ top: px(nowMin) }}>
               <span className="now-clock">{fmt(nowMin)}</span>
-              <span className="now-rule" />
+              <span className="now-rule">
+                <i />
+              </span>
             </div>
           )}
         </div>
@@ -221,7 +220,9 @@ export default function Today() {
           <div className="kv">
             <span>上班</span>
             {punchIn ? (
-              <span className="mono">{punchIn}</span>
+              <button type="button" className="punch-val" onClick={() => setSetting("punch_in:" + today, "")} aria-label="清掉上班打卡">
+                {punchIn}
+              </button>
             ) : (
               <button type="button" className="text-btn mono" onClick={() => setSetting("punch_in:" + today, stamp())}>
                 记一下 →
@@ -231,7 +232,9 @@ export default function Today() {
           <div className="kv">
             <span>下班</span>
             {punchOut ? (
-              <span className="mono">{punchOut}</span>
+              <button type="button" className="punch-val" onClick={() => setSetting("punch_out:" + today, "")} aria-label="清掉下班打卡">
+                {punchOut}
+              </button>
             ) : nowMin >= DAY_END - 10 ? (
               <button type="button" className="text-btn mono red" onClick={() => setSetting("punch_out:" + today, stamp())}>
                 记一下 →

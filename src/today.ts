@@ -32,7 +32,10 @@ export function useToday(today: string, nowMin: number) {
 
   const loadCands = useCallback(
     async (todayTasks: Task[]) => {
-      const back = await api.tasksBacklog(today);
+      const all = await api.tasksBacklog(today);
+      const past = all.filter((t) => t.day && t.day < today && t.start != null && t.kind === "work");
+      if (past.length) await api.tasksSave(past.map((t) => ({ ...t, done: true, doneAt: t.doneAt ?? new Date().toISOString() })));
+      const back = all.filter((t) => !past.includes(t));
       const prev = dayKey(prevWorkday(parseDay(today)));
       const fromToday = todayTasks.filter((t) => !t.done && t.kind === "work");
       const list: Cand[] = [...fromToday, ...back].map((t) => {
@@ -55,9 +58,10 @@ export function useToday(today: string, nowMin: number) {
 
   const reload = useCallback(async () => {
     const s = await api.dayState(today);
+    const has = s.tasks.some((t) => t.kind === "work" && t.start != null);
     setTasks(s.tasks);
-    setPlanned(s.planned);
-    if (!s.planned) await loadCands(s.tasks);
+    setPlanned(s.planned || has);
+    if (!s.planned && !has) await loadCands(s.tasks);
     setLoaded(true);
   }, [today, loadCands]);
 
@@ -65,6 +69,12 @@ export function useToday(today: string, nowMin: number) {
     setLoaded(false);
     reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const due = tasks.filter((t) => !t.done && t.start != null && t.end! <= nowMin && t.day === today && t.kind === "work");
+    if (due.length) commit(due.map((t) => ({ ...t, done: true, doneAt: new Date().toISOString() })));
+  }, [nowMin, loaded, tasks, today]);
 
   const scheduled = useMemo(() => tasks.filter((t) => t.start != null), [tasks]);
   const overflow = useMemo(() => tasks.filter((t) => t.start == null && !t.done), [tasks]);
@@ -95,6 +105,14 @@ export function useToday(today: string, nowMin: number) {
       .join("\n");
 
   const overNote = (over: Task[]) => (over.length ? "\n顺到明天：" + over.map((t) => t.title).join("、") : "");
+
+  const notDone = async (id: string) => {
+    const list = tasks.map((t) => (t.id === id ? { ...t, done: false, doneAt: null, pinned: false, start: null, end: null } : t));
+    const r = await runReflow(list, Math.max(base, Math.ceil(nowMin / 10) * 10));
+    const x = r.tasks.find((t) => t.id === id);
+    const name = tasks.find((t) => t.id === id)?.title ?? "";
+    return x ? `「${name}」顺到 ${fmt(x.start!)}–${fmt(x.end!)}。` : `「${name}」今天放不下，顺到明天。`;
+  };
 
   const toggle = async (id: string) => {
     const t = tasks.find((x) => x.id === id);
@@ -254,6 +272,10 @@ export function useToday(today: string, nowMin: number) {
       list = [...r.tasks, ...r.over];
     }
     await commit(list);
+    if (!planned && list.some((t) => t.kind === "work" && t.start != null)) {
+      await api.daySetPlanned(today, true);
+      setPlanned(true);
+    }
     return [...added, ...done, ...undone];
   };
 
@@ -267,6 +289,7 @@ export function useToday(today: string, nowMin: number) {
     base,
     reload,
     toggle,
+    notDone,
     remove,
     togglePin,
     addText,
