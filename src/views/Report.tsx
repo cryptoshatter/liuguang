@@ -7,29 +7,37 @@ import { splitJson } from "../lib/claude";
 import { WD, addDays, dayKey, md, parseDay, weekStart } from "../lib/time";
 
 const strip = (s: string) => s.replace(/[。；;，,\s]+$/, "");
+const norm = (s: string) => s.toLowerCase().replace(/[\s，,。.；;：:、！!？?（）()【】\[\]「」“”"'-]/g, "");
+
+export function dedupe<T>(xs: T[], text: (x: T) => string): T[] {
+  const keys = xs.map((x) => norm(text(x)));
+  return xs.filter((_, i) => {
+    const k = keys[i];
+    if (!k) return false;
+    return !keys.some((o, j) => j !== i && o.includes(k) && (o.length > k.length || j < i));
+  });
+}
 
 export function buildReport(headTpl: string, leader: string, from: Date, to: Date, tasks: Task[], notes: Note[], goals: Goal[]) {
-  const items: string[] = [];
-  const seen = new Set<string>();
-  const add = (s: string) => {
-    const v = strip(s);
-    if (v && !seen.has(v)) {
-      seen.add(v);
-      items.push(v);
-    }
-  };
-  tasks.filter((t) => t.done && t.kind === "work").forEach((t) => add(t.title));
-  notes.forEach((n) => add(n.text));
-  goals.forEach((g) => add("学习：" + g.title));
+  const items = dedupe(
+    [...tasks.filter((t) => t.done && t.kind === "work").map((t) => t.title), ...notes.map((n) => n.text), ...goals.map((g) => "学习：" + g.title)].map(strip),
+    (x) => x,
+  );
   const tpl = leader ? headTpl : headTpl.replace(/\{leader\}[，,]?\s*/g, "");
   const head = tpl.replace(/\{leader\}/g, leader).replace(/\{range\}/g, `${md(from)}–${md(to)}`);
   if (!items.length) return head + "\n";
   return head + "\n" + items.map((s, i) => `${i + 1}. ${s}${i === items.length - 1 ? "。" : "；"}`).join("\n");
 }
 
+export const reportJump: { week: Date | null } = { week: null };
+
 export default function Report() {
   const { now, today, profile, ask, toast, dataVersion, flash } = useApp();
-  const [week, setWeek] = useState(() => weekStart(now));
+  const [week, setWeek] = useState(() => {
+    const w = reportJump.week ?? weekStart(now);
+    reportJump.week = null;
+    return w;
+  });
   const [tasks, setTasks] = useState<Task[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
@@ -140,8 +148,15 @@ export default function Report() {
         <div className="rule-top">
           {shown.map((d) => {
             const k = dayKey(d);
-            const dt = tasks.filter((t) => t.day === k && t.done && t.kind === "work");
-            const dn = notes.filter((n) => n.day === k);
+            const merged = dedupe(
+              [
+                ...tasks.filter((t) => t.day === k && t.done && t.kind === "work").map((t) => ({ text: t.title, task: t.id, note: 0 })),
+                ...notes.filter((n) => n.day === k).map((n) => ({ text: n.text, task: "", note: n.id })),
+              ],
+              (x) => x.text,
+            );
+            const dt = merged.filter((x) => x.task);
+            const dn = merged.filter((x) => x.note);
             const isToday = k === today;
             const empty = !dt.length && !dn.length;
             const open = adding === k || (adding == null && isToday);
@@ -153,14 +168,14 @@ export default function Report() {
                 </div>
                 <div className="grow min0 log-items">
                   {dt.map((t) => (
-                    <div key={t.id} className="small">
-                      {t.title}
+                    <div key={t.task} className="small">
+                      {t.text}
                     </div>
                   ))}
                   {dn.map((n) => (
-                    <div key={n.id} className="small note-row">
+                    <div key={n.note} className="small note-row">
                       <span className="grow">{n.text}</span>
-                      <button type="button" className="x" onClick={() => delNote(n.id)} aria-label="删除这条">
+                      <button type="button" className="x" onClick={() => delNote(n.note)} aria-label="删除这条">
                         ×
                       </button>
                     </div>

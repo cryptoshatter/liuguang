@@ -38,7 +38,21 @@ const Field = ({ label, children }: { label: string; children: React.ReactNode }
   </label>
 );
 
+const TABS: [string, string][] = [
+  ["me", "个人与作息"],
+  ["links", "快捷入口"],
+  ["mail", "邮箱"],
+  ["claude", "Claude"],
+  ["data", "数据与更新"],
+];
+const lastTab = { v: "me" };
+
 export default function Settings() {
+  const [tab, setTab] = useState(lastTab.v);
+  const pickTab = (k: string) => {
+    lastTab.v = k;
+    setTab(k);
+  };
   const { settings, setSetting, toast, profile, refreshMail, links, obState, bumpData } = useApp();
   const [cfg, setCfg] = useState<MailConfig | null>(null);
   const [pw, setPw] = useState("");
@@ -131,7 +145,7 @@ export default function Settings() {
 
   const saveClaude = async () => {
     await setSetting("claude_path", claudePath.trim());
-    setClaude(await api.claudeStatus());
+    setClaude(await api.claudeStatusFresh());
   };
 
   const exportAll = async () => {
@@ -157,6 +171,16 @@ export default function Settings() {
 
   return (
     <div className="settings">
+      <div className="tabs" role="tablist">
+        {TABS.map(([k, label]) => (
+          <button key={k} type="button" role="tab" aria-selected={tab === k} className={"tab" + (tab === k ? " on" : "")} onClick={() => pickTab(k)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "me" && (
+      <>
       <section className="set-sec">
         <h2>个人</h2>
         <div className="fields">
@@ -204,6 +228,10 @@ export default function Settings() {
         </div>
       </section>
 
+      </>
+      )}
+
+      {tab === "links" && (
       <section className="set-sec">
         <h2>快捷入口</h2>
         {linkList.map((l, i) => (
@@ -222,6 +250,9 @@ export default function Settings() {
         </div>
       </section>
 
+      )}
+
+      {tab === "mail" && (
       <section className="set-sec">
         <h2>邮箱</h2>
         {cfg && (
@@ -291,6 +322,9 @@ export default function Settings() {
         )}
       </section>
 
+      )}
+
+      {tab === "claude" && (
       <section className="set-sec">
         <h2>Claude</h2>
         <div className="small">{claude == null ? "检测中" : claude.found ? "已找到：" + claude.path : "没找到本机的 Claude Code"}</div>
@@ -306,6 +340,10 @@ export default function Settings() {
         </div>
       </section>
 
+      )}
+
+      {tab === "data" && (
+      <>
       <section className="set-sec">
         <h2>数据</h2>
         {info && (
@@ -372,6 +410,8 @@ export default function Settings() {
           检查更新
         </button>
       </div>
+      </>
+      )}
     </div>
   );
 }

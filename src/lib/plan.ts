@@ -43,11 +43,6 @@ export function parseQuick(text: string): Quick {
     const e = parseHM(m[2]);
     if (s != null && e != null && e > s) return { title: m[3].trim(), minutes: e - s, start: s, end: e };
   }
-  const one = text.match(/^(\d{1,2}[:：]\d{2})\s+(.+)$/);
-  if (one) {
-    const s = parseHM(one[1]);
-    if (s != null) return { title: one[2].trim(), minutes: 60, start: s, end: s + 60 };
-  }
   let minutes = 30;
   let rest = text;
   const dm = rest.match(/\s*(\d+(?:\.\d+)?)\s*(分钟|min|小时|h)\s*$/i);
@@ -55,6 +50,12 @@ export function parseQuick(text: string): Quick {
     const v = parseFloat(dm[1]);
     minutes = /小时|h/i.test(dm[2]) ? Math.round(v * 60) : Math.round(v);
     rest = rest.slice(0, dm.index).trim();
+  }
+  const one = rest.match(/^(\d{1,2}[:：]\d{2})\s*(.+)$/);
+  if (one) {
+    const s = parseHM(one[1]);
+    const len = dm ? minutes : 60;
+    if (s != null) return { title: one[2].trim(), minutes: len, start: s, end: s + len };
   }
   const title = rest.replace(/^(帮我)?(下午|上午)?(再)?(加|新增|添加)(一个|一项|个)?/, "").trim() || rest;
   return { title, minutes, pm: /^(帮我)?下午/.test(text) };

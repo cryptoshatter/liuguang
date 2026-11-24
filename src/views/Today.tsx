@@ -1,15 +1,36 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { fl, useApp } from "../ctx";
 import { pendingOb } from "../lib/onboarding";
 import { AM_START, DAY_END, LUNCH_START, PM_START, daysBetween, dur, fmt, md, minutesOf, pad, parseDay } from "../lib/time";
 
-const px = (m: number) => ((Math.max(AM_START, Math.min(DAY_END, m)) - AM_START) * 80) / 60 + 10;
+const LUNCH_PX = 30;
 
 export default function Today() {
   const { now, today, todayApi: t, go, ask, say, settings, setSetting, openClaude, obItems, obState, flash } = useApp();
   const [quick, setQuick] = useState("");
   const [leaving, setLeaving] = useState<Set<string>>(() => new Set());
   const nowMin = minutesOf(now);
+  const tlRef = useRef<HTMLDivElement>(null);
+  const [tlH, setTlH] = useState(620);
+  useLayoutEffect(() => {
+    const el = tlRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setTlH(el.clientHeight));
+    ro.observe(el);
+    setTlH(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+  const lunchPx = PM_START > LUNCH_START ? LUNCH_PX : 0;
+  const k = Math.max(0.6, (tlH - 24 - lunchPx) / (LUNCH_START - AM_START + DAY_END - PM_START));
+  const px = (v: number) => {
+    const m = Math.max(AM_START, Math.min(DAY_END, v));
+    if (m <= LUNCH_START) return 10 + (m - AM_START) * k;
+    const am = (LUNCH_START - AM_START) * k;
+    if (m < PM_START) return 10 + am + ((m - LUNCH_START) / (PM_START - LUNCH_START)) * lunchPx;
+    return 10 + am + lunchPx + (m - PM_START) * k;
+  };
+  const inLunch = (m: number) => m > LUNCH_START && m < PM_START;
+  const minH = Math.ceil(0.6 * (LUNCH_START - AM_START + DAY_END - PM_START) + lunchPx + 24);
   const MARKS: [number, string][] = [
     [AM_START, "上班"],
     [LUNCH_START, "午饭"],
@@ -75,7 +96,7 @@ export default function Today() {
   };
 
   return (
-    <div className="cols">
+    <div className="cols fill">
       <section className="col-wide" aria-label="时间流">
         <div className="sec-head">
           <h2>时间流</h2>
@@ -89,7 +110,7 @@ export default function Today() {
               submitQuick();
             }}
           >
-            <input value={quick} onChange={(e) => setQuick(e.target.value)} placeholder="加一项任务，如 15:00-16:00 需求评审，或 整理字段说明 45分钟" aria-label="加一项任务" />
+            <input value={quick} onChange={(e) => setQuick(e.target.value)} placeholder="加任务，如 15:00 需求评审 1小时" aria-label="加一项任务" />
             <button type="submit" className="btn solid">
               加入
             </button>
@@ -107,21 +128,25 @@ export default function Today() {
           </form>
         )}
         {!t.planned && t.loaded && <div className="muted small">在右边和 Claude 定好今天做什么，就会排进这里。</div>}
-        <div className="timeline">
+        <div className="timeline" ref={tlRef} style={{ minHeight: minH }}>
           <div className="seg" style={{ top: px(AM_START), height: px(LUNCH_START) - px(AM_START) }} />
           <div className="seg" style={{ top: px(PM_START), height: px(DAY_END) - px(PM_START) }} />
           <div className="rail" style={{ top: px(AM_START), height: px(LUNCH_START) - px(AM_START) }} />
           <div className="rail" style={{ top: px(PM_START), height: px(DAY_END) - px(PM_START) }} />
           <div className="past" style={{ height: Math.max(0, px(nowMin) - 10) }} />
-          {Array.from({ length: h1 - h0 }, (_, i) => (
-            <div key={"h" + i} className="half" style={{ top: px((h0 + i) * 60 + 30) }} />
-          ))}
-          {Array.from({ length: h1 - h0 + 1 }, (_, i) => (
-            <div key={"t" + i} className="hour" style={{ top: px((h0 + i) * 60) }}>
-              <span className="hour-label">{pad(h0 + i)}:00</span>
-              <span className="hour-line" />
-            </div>
-          ))}
+          {Array.from({ length: h1 - h0 }, (_, i) => (h0 + i) * 60 + 30)
+            .filter((m) => !inLunch(m) && m < DAY_END && m > AM_START)
+            .map((m) => (
+              <div key={"h" + m} className="half" style={{ top: px(m) }} />
+            ))}
+          {Array.from({ length: h1 - h0 + 1 }, (_, i) => h0 + i)
+            .filter((h) => !inLunch(h * 60))
+            .map((h) => (
+              <div key={"t" + h} className="hour" style={{ top: px(h * 60) }}>
+                <span className="hour-label">{pad(h)}:00</span>
+                <span className="hour-line" />
+              </div>
+            ))}
           <div className="lunch" style={{ top: px(LUNCH_START), height: px(PM_START) - px(LUNCH_START) }}>
             <span className="lunch-tag">
               <span className="lunch-name">午休</span>

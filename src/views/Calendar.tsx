@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useApp } from "../ctx";
+import { api } from "../lib/api";
 import { HOLIDAYS, dayKind } from "../lib/calendar";
-import { dayKey, daysBetween, parseDay } from "../lib/time";
+import { dayKey, daysBetween, parseDay, weekStart } from "../lib/time";
+import { reportJump } from "./Report";
 
 const CN_YEAR: Record<string, string> = { "0": "〇", "1": "一", "2": "二", "3": "三", "4": "四", "5": "五", "6": "六", "7": "七", "8": "八", "9": "九" };
 const mdOf = (k: string) => {
@@ -10,8 +12,25 @@ const mdOf = (k: string) => {
 };
 
 export default function Calendar() {
-  const { now } = useApp();
+  const { now, settings, go, dataVersion } = useApp();
   const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
+  const [logs, setLogs] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    const from = dayKey(new Date(ym.y, ym.m, 1));
+    const to = dayKey(new Date(ym.y, ym.m + 1, 0));
+    Promise.all([api.tasksRange(from, to), api.notesRange(from, to)]).then(([ts, ns]) => {
+      const c: Record<string, number> = {};
+      for (const t of ts) if (t.done && t.kind === "work" && t.day) c[t.day] = (c[t.day] ?? 0) + 1;
+      for (const n of ns) c[n.day] = (c[n.day] ?? 0) + 1;
+      setLogs(c);
+    });
+  }, [ym.y, ym.m, dataVersion]);
+
+  const openWeek = (k: string) => {
+    reportJump.week = weekStart(parseDay(k));
+    go("log");
+  };
 
   const years = Object.keys(HOLIDAYS).map(Number);
   const listYear = years.includes(ym.y) ? ym.y : years.find((y) => y >= now.getFullYear()) ?? years[years.length - 1];
@@ -79,14 +98,28 @@ export default function Calendar() {
           ))}
           {cells.map((c, i) =>
             c ? (
-              <div key={i} className={"cal-cell " + c.kind.kind + (c.key === todayKey ? " today" : "")}>
+              <button
+                type="button"
+                key={i}
+                className={"cal-cell " + c.kind.kind + (c.key === todayKey ? " today" : "") + (c.key > todayKey ? " future" : "")}
+                onClick={() => openWeek(c.key)}
+                aria-label={c.key + " 这周的周报"}
+              >
                 <div className="cal-top">
                   <span className="cal-num">{c.n}</span>
                   {c.kind.kind === "hol" && <span className="stamp hol">休</span>}
                   {c.kind.kind === "duty" && <span className="stamp duty">班</span>}
                 </div>
-                <span className="cal-tag">{c.kind.kind === "hol" ? c.kind.name : c.kind.kind === "duty" ? c.kind.name + "调休" : ""}</span>
-              </div>
+                <span className="cal-info">
+                  {(settings["punch_in:" + c.key] || settings["punch_out:" + c.key]) && (
+                    <span className="cal-punch">
+                      {settings["punch_in:" + c.key] || "—"} – {settings["punch_out:" + c.key] || "—"}
+                    </span>
+                  )}
+                  {logs[c.key] > 0 && <span className="cal-log">日志 {logs[c.key]}</span>}
+                  <span className="cal-tag">{c.kind.kind === "hol" ? c.kind.name : c.kind.kind === "duty" ? c.kind.name + "调休" : ""}</span>
+                </span>
+              </button>
             ) : (
               <div key={i} className="cal-cell empty" />
             ),

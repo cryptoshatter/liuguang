@@ -1,6 +1,7 @@
 mod claude;
 mod db;
 mod mail;
+mod mailcache;
 mod store;
 
 use std::path::PathBuf;
@@ -95,6 +96,8 @@ pub fn run() {
             mail::mail_save_config,
             mail::mail_list,
             mail::mail_folders,
+            mail::mail_cached,
+            mail::mail_prefetch,
             mail::mail_flag,
             mail::mail_delete,
             mail::mail_get,

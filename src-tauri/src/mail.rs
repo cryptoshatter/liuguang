@@ -1,4 +1,4 @@
-use crate::{db, AppState};
+use crate::{db, mailcache, AppState};
 use lettre::message::header::ContentType;
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
@@ -8,7 +8,10 @@ use mail_parser::{MessageParser, MimeHeaders};
 use serde::{Deserialize, Serialize};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::State;
 
 const SERVICE: &str = "流光";
@@ -33,10 +36,30 @@ fn keyring_entry(account: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, account).map_err(|e| e.to_string())
 }
 
+static PASS: Mutex<Option<(String, String)>> = Mutex::new(None);
+
 fn password(account: &str) -> Result<String, String> {
-    keyring_entry(account)?
+    if let Some((a, p)) = PASS.lock().ok().and_then(|g| g.clone()) {
+        if a == account {
+            return Ok(p);
+        }
+    }
+    let p = keyring_entry(account)?
         .get_password()
-        .map_err(|_| "还没有保存邮箱密码，请在设置里填写。".to_string())
+        .map_err(|_| "还没有保存邮箱密码，请在设置里填写。".to_string())?;
+    if let Ok(mut g) = PASS.lock() {
+        *g = Some((account.to_string(), p.clone()));
+    }
+    Ok(p)
+}
+
+fn reset_session() {
+    if let Ok(mut g) = PASS.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = POOL.lock() {
+        *g = None;
+    }
 }
 
 fn default_security(port: u16, imap: bool) -> String {
@@ -119,6 +142,7 @@ pub fn mail_save_config(
     password: Option<String>,
 ) -> Result<(), String> {
     save_config(&state, &config)?;
+    reset_session();
     if let Some(p) = password.filter(|p| !p.is_empty()) {
         let login = if config.login.trim().is_empty() { config.address.trim() } else { config.login.trim() };
         keyring_entry(login)?.set_password(&p).map_err(|e| format!("写入钥匙串失败：{}", e))?;
@@ -265,6 +289,47 @@ fn imap_login(host: &str, port: u16, security: &str, insecure: bool, login: &str
 fn connect(cfg: &MailConfig) -> Result<Imap, String> {
     let pass = password(&cfg.login)?;
     imap_login(&cfg.imap_host, cfg.imap_port, &cfg.imap_security, cfg.insecure, &cfg.login, &pass)
+}
+
+struct Pooled {
+    key: String,
+    s: Imap,
+    at: Instant,
+}
+
+static POOL: Mutex<Option<Pooled>> = Mutex::new(None);
+
+fn acct(cfg: &MailConfig) -> String {
+    format!("{}|{}|{}", cfg.login, cfg.imap_host, cfg.imap_port)
+}
+
+fn with_session<T>(cfg: &MailConfig, mut f: impl FnMut(&mut Imap) -> Result<T, String>) -> Result<T, String> {
+    let key = acct(cfg);
+    let reused = POOL
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+        .filter(|p| p.key == key && p.at.elapsed() < Duration::from_secs(240));
+    if let Some(mut p) = reused {
+        if let Ok(v) = f(&mut p.s) {
+            park(key, p.s);
+            return Ok(v);
+        }
+    }
+    let mut s = connect(cfg)?;
+    let r = f(&mut s);
+    if r.is_ok() {
+        park(key, s);
+    } else {
+        let _ = s.logout();
+    }
+    r
+}
+
+fn park(key: String, s: Imap) {
+    if let Ok(mut g) = POOL.lock() {
+        *g = Some(Pooled { key, s, at: Instant::now() });
+    }
 }
 
 fn smtp_transport(host: &str, port: u16, security: &str, insecure: bool, login: &str, pass: &str) -> Result<SmtpTransport, String> {
@@ -551,7 +616,7 @@ fn fix_headers(raw: &[u8]) -> Vec<u8> {
     v
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MailFolder {
     name: String,
@@ -590,44 +655,49 @@ fn find_role(s: &mut Imap, role: &str) -> Option<String> {
     found
 }
 
-fn folders_blocking(cfg: MailConfig) -> Result<Vec<MailFolder>, String> {
-    let mut s = connect(&cfg)?;
-    let names = s.list(None, Some("*")).map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for n in names.iter() {
-        if n.attributes().iter().any(|a| matches!(a, imap::types::NameAttribute::NoSelect)) {
-            continue;
+fn folders_blocking(cfg: MailConfig, dir: PathBuf) -> Result<Vec<MailFolder>, String> {
+    let mut out = with_session(&cfg, |s| {
+        let names = s.list(None, Some("*")).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for n in names.iter() {
+            if n.attributes().iter().any(|a| matches!(a, imap::types::NameAttribute::NoSelect)) {
+                continue;
+            }
+            let role = folder_role(n.name(), n.attributes());
+            let label = match role {
+                "inbox" => "收件箱".to_string(),
+                "sent" => "已发送".to_string(),
+                "drafts" => "草稿箱".to_string(),
+                "trash" => "已删除".to_string(),
+                "junk" => "垃圾邮件".to_string(),
+                _ => decode_mutf7(n.name()),
+            };
+            out.push(MailFolder { name: n.name().to_string(), label, role: role.to_string(), unread: 0, total: 0 });
         }
-        let role = folder_role(n.name(), n.attributes());
-        let label = match role {
-            "inbox" => "收件箱".to_string(),
-            "sent" => "已发送".to_string(),
-            "drafts" => "草稿箱".to_string(),
-            "trash" => "已删除".to_string(),
-            "junk" => "垃圾邮件".to_string(),
-            _ => decode_mutf7(n.name()),
-        };
-        out.push(MailFolder { name: n.name().to_string(), label, role: role.to_string(), unread: 0, total: 0 });
-    }
-    for f in out.iter_mut() {
-        if let Ok(m) = s.status(&f.name, "(MESSAGES UNSEEN)") {
-            f.unread = m.unseen.unwrap_or(0);
-            f.total = m.exists;
+        for f in out.iter_mut() {
+            if let Ok(m) = s.status(&f.name, "(MESSAGES UNSEEN)") {
+                f.unread = m.unseen.unwrap_or(0);
+                f.total = m.exists;
+            }
         }
-    }
-    let _ = s.logout();
+        Ok(out)
+    })?;
     let rank = |r: &str| ["inbox", "drafts", "sent", "trash", "junk", "other"].iter().position(|x| *x == r).unwrap_or(9);
     out.sort_by(|a, b| rank(&a.role).cmp(&rank(&b.role)).then(a.label.cmp(&b.label)));
+    if let Ok(j) = serde_json::to_string(&out) {
+        mailcache::put_folders(&dir, &acct(&cfg), &j);
+    }
     Ok(out)
 }
 
 #[tauri::command]
 pub async fn mail_folders(state: State<'_, AppState>) -> Result<Vec<MailFolder>, String> {
     let cfg = load_config(&state)?;
-    blocking(move || folders_blocking(cfg)).await.map_err(|e| e.to_string())?
+    let dir = state.data_dir.clone();
+    blocking(move || folders_blocking(cfg, dir)).await.map_err(|e| e.to_string())?
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MailSummary {
     uid: u32,
@@ -640,6 +710,28 @@ pub struct MailSummary {
     flagged: bool,
     attach: bool,
     preview: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailCached {
+    folders: Vec<MailFolder>,
+    list: Vec<MailSummary>,
+}
+
+#[tauri::command]
+pub fn mail_cached(state: State<'_, AppState>, folder: String) -> Result<MailCached, String> {
+    let cfg = load_config(&state)?;
+    let a = acct(&cfg);
+    let folders = mailcache::folders(&state.data_dir, &a)
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default();
+    let mut list: Vec<MailSummary> = mailcache::summaries(&state.data_dir, &a, &folder, None)
+        .into_iter()
+        .filter_map(|(_, d)| serde_json::from_str(&d).ok())
+        .collect();
+    list.sort_by(|a, b| b.date.cmp(&a.date));
+    Ok(MailCached { folders, list })
 }
 
 fn first_addr(a: Option<&mail_parser::Address>) -> (String, String) {
@@ -657,63 +749,120 @@ fn select(s: &mut Imap, folder: &str) -> Result<imap::types::Mailbox, String> {
     s.select(folder).map_err(|e| e.to_string())
 }
 
-fn list_blocking(cfg: MailConfig, folder: String, limit: u32) -> Result<Vec<MailSummary>, String> {
-    let mut s = connect(&cfg)?;
-    let mb = select(&mut s, &folder)?;
-    if mb.exists == 0 {
-        let _ = s.logout();
-        return Ok(vec![]);
+fn summarize(f: &imap::types::Fetch, parser: &MessageParser) -> Option<MailSummary> {
+    let uid = f.uid?;
+    let seen = f.flags().iter().any(|fl| matches!(fl, imap::types::Flag::Seen));
+    let flagged = f.flags().iter().any(|fl| matches!(fl, imap::types::Flag::Flagged));
+    let mut m = MailSummary { uid, from_name: String::new(), from_addr: String::new(), to_name: String::new(), subject: String::new(), date: 0, seen, flagged, attach: false, preview: String::new() };
+    if let Some(h) = f.header() {
+        let h = fix_headers(h);
+        if let Some(p) = parser.parse_headers(&h[..]) {
+            m.subject = p.subject().unwrap_or("").to_string();
+            (m.from_name, m.from_addr) = first_addr(p.from());
+            let (tn, ta) = first_addr(p.to());
+            m.to_name = if tn.is_empty() { ta } else { tn };
+            m.date = p.date().map(|d| d.to_timestamp()).unwrap_or(0);
+            m.attach = p
+                .content_type()
+                .map(|c| c.ctype().eq_ignore_ascii_case("multipart") && c.subtype().map(|x| x.eq_ignore_ascii_case("mixed")).unwrap_or(false))
+                .unwrap_or(false);
+        }
     }
-    let start = mb.exists.saturating_sub(limit.saturating_sub(1)).max(1);
-    let fetches = s
-        .fetch(format!("{}:{}", start, mb.exists), "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER] BODY.PEEK[]<0.12288>)")
-        .map_err(|e| e.to_string())?;
-    let parser = MessageParser::default();
-    let mut out = Vec::new();
-    for f in fetches.iter() {
-        let Some(uid) = f.uid else { continue };
-        let seen = f.flags().iter().any(|fl| matches!(fl, imap::types::Flag::Seen));
-        let flagged = f.flags().iter().any(|fl| matches!(fl, imap::types::Flag::Flagged));
-        let mut m = MailSummary { uid, from_name: String::new(), from_addr: String::new(), to_name: String::new(), subject: String::new(), date: 0, seen, flagged, attach: false, preview: String::new() };
-        if let Some(h) = f.header() {
-            let h = fix_headers(h);
-            if let Some(p) = parser.parse_headers(&h[..]) {
-                m.subject = p.subject().unwrap_or("").to_string();
-                (m.from_name, m.from_addr) = first_addr(p.from());
-                let (tn, ta) = first_addr(p.to());
-                m.to_name = if tn.is_empty() { ta } else { tn };
-                m.date = p.date().map(|d| d.to_timestamp()).unwrap_or(0);
-                m.attach = p
-                    .content_type()
-                    .map(|c| c.ctype().eq_ignore_ascii_case("multipart") && c.subtype().map(|x| x.eq_ignore_ascii_case("mixed")).unwrap_or(false))
-                    .unwrap_or(false);
+    if let Some(b) = f.body() {
+        let b = fix_headers(b);
+        if let Some(p) = parser.parse(&b[..]) {
+            if let Some(t) = p.body_preview(160) {
+                m.preview = t.split_whitespace().collect::<Vec<_>>().join(" ");
             }
         }
-        if let Some(b) = f.body() {
-            let b = fix_headers(b);
-            if let Some(p) = parser.parse(&b[..]) {
-                if let Some(t) = p.body_preview(160) {
-                    m.preview = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    if let Some(d) = f.internal_date() {
+        m.date = d.timestamp();
+    }
+    Some(m)
+}
+
+fn uid_set(uids: &[u32]) -> String {
+    uids.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",")
+}
+
+fn list_blocking(cfg: MailConfig, dir: PathBuf, folder: String, limit: u32) -> Result<Vec<MailSummary>, String> {
+    let a = acct(&cfg);
+    let (validity, mut out) = with_session(&cfg, |s| {
+        let mb = select(s, &folder)?;
+        let validity = mb.uid_validity.unwrap_or(0) as i64;
+        if mb.exists == 0 {
+            return Ok((validity, vec![]));
+        }
+        let cached: HashMap<u32, MailSummary> = mailcache::summaries(&dir, &a, &folder, Some(validity))
+            .into_iter()
+            .filter_map(|(u, d)| serde_json::from_str(&d).ok().map(|m| (u, m)))
+            .collect();
+        let start = mb.exists.saturating_sub(limit.saturating_sub(1)).max(1);
+        let flags = s.fetch(format!("{}:{}", start, mb.exists), "(UID FLAGS)").map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        let mut missing = Vec::new();
+        for f in flags.iter() {
+            let Some(uid) = f.uid else { continue };
+            match cached.get(&uid) {
+                Some(c) => {
+                    let mut m = c.clone();
+                    m.seen = f.flags().iter().any(|fl| matches!(fl, imap::types::Flag::Seen));
+                    m.flagged = f.flags().iter().any(|fl| matches!(fl, imap::types::Flag::Flagged));
+                    out.push(m);
                 }
+                None => missing.push(uid),
             }
         }
-        if let Some(d) = f.internal_date() {
-            m.date = d.timestamp();
+        if !missing.is_empty() {
+            let parser = MessageParser::default();
+            let fetches = s
+                .uid_fetch(uid_set(&missing), "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER] BODY.PEEK[]<0.12288>)")
+                .map_err(|e| e.to_string())?;
+            out.extend(fetches.iter().filter_map(|f| summarize(f, &parser)));
         }
-        out.push(m);
-    }
-    let _ = s.logout();
+        Ok((validity, out))
+    })?;
     out.sort_by(|a, b| b.date.cmp(&a.date));
+    let rows: Vec<(u32, String)> = out.iter().filter_map(|m| serde_json::to_string(m).ok().map(|j| (m.uid, j))).collect();
+    mailcache::replace(&dir, &a, &folder, validity, &rows);
     Ok(out)
 }
 
 #[tauri::command]
 pub async fn mail_list(state: State<'_, AppState>, folder: Option<String>, limit: Option<u32>) -> Result<Vec<MailSummary>, String> {
     let cfg = load_config(&state)?;
+    let dir = state.data_dir.clone();
     let folder = folder.unwrap_or_else(|| "INBOX".into());
-    blocking(move || list_blocking(cfg, folder, limit.unwrap_or(60)))
+    blocking(move || list_blocking(cfg, dir, folder, limit.unwrap_or(80)))
         .await
         .map_err(|e| e.to_string())?
+}
+
+fn prefetch_blocking(cfg: MailConfig, dir: PathBuf, folder: String, uids: Vec<u32>) -> Result<(), String> {
+    let a = acct(&cfg);
+    let have = mailcache::has_body(&dir, &a, &folder);
+    let need: Vec<u32> = uids.into_iter().filter(|u| !have.contains(u)).collect();
+    if need.is_empty() {
+        return Ok(());
+    }
+    with_session(&cfg, |s| {
+        select(s, &folder)?;
+        let fetches = s.uid_fetch(uid_set(&need), "(UID BODY.PEEK[])").map_err(|e| e.to_string())?;
+        for f in fetches.iter() {
+            if let (Some(uid), Some(b)) = (f.uid, f.body()) {
+                mailcache::put_body(&dir, &a, &folder, uid, &fix_headers(b));
+            }
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub async fn mail_prefetch(state: State<'_, AppState>, folder: String, uids: Vec<u32>) -> Result<(), String> {
+    let cfg = load_config(&state)?;
+    let dir = state.data_dir.clone();
+    blocking(move || prefetch_blocking(cfg, dir, folder, uids)).await.map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]
@@ -759,19 +908,56 @@ fn addrs_full(a: Option<&mail_parser::Address>) -> Vec<String> {
     .unwrap_or_default()
 }
 
-fn fetch_raw(cfg: &MailConfig, folder: &str, uid: u32, mark_seen: bool) -> Result<Vec<u8>, String> {
-    let mut s = connect(cfg)?;
-    select(&mut s, folder)?;
-    let fetches = s.uid_fetch(uid.to_string(), "BODY.PEEK[]").map_err(|e| e.to_string())?;
-    let raw = fetches
-        .iter()
-        .find_map(|f| f.body().map(|b| b.to_vec()))
-        .ok_or("这封邮件在服务器上已经不存在了")?;
-    if mark_seen {
-        let _ = s.uid_store(uid.to_string(), "+FLAGS (\\Seen)");
+fn set_cached_flag(dir: &Path, a: &str, folder: &str, uid: u32, flag: &str, on: bool) {
+    if let Some(mut m) = mailcache::summary(dir, a, folder, uid).and_then(|d| serde_json::from_str::<MailSummary>(&d).ok()) {
+        if flag == "flagged" {
+            m.flagged = on;
+        } else {
+            m.seen = on;
+        }
+        if let Ok(j) = serde_json::to_string(&m) {
+            mailcache::put_summary(dir, a, folder, uid, &j);
+        }
     }
-    let _ = s.logout();
-    Ok(fix_headers(&raw))
+}
+
+fn raw_message(cfg: &MailConfig, dir: &Path, folder: &str, uid: u32, mark_seen: bool) -> Result<Vec<u8>, String> {
+    let a = acct(cfg);
+    let unseen = mark_seen
+        && mailcache::summary(dir, &a, folder, uid)
+            .and_then(|d| serde_json::from_str::<MailSummary>(&d).ok())
+            .map(|m| !m.seen)
+            .unwrap_or(true);
+    if let Some(raw) = mailcache::body(dir, &a, folder, uid) {
+        if unseen {
+            let (c2, f2) = (cfg.clone(), folder.to_string());
+            std::thread::spawn(move || {
+                let _ = with_session(&c2, |s| {
+                    select(s, &f2)?;
+                    s.uid_store(uid.to_string(), "+FLAGS (\\Seen)").map(|_| ()).map_err(|e| e.to_string())
+                });
+            });
+            set_cached_flag(dir, &a, folder, uid, "seen", true);
+        }
+        return Ok(raw);
+    }
+    let raw = with_session(cfg, |s| {
+        select(s, folder)?;
+        let fetches = s.uid_fetch(uid.to_string(), "BODY.PEEK[]").map_err(|e| e.to_string())?;
+        let raw = fetches
+            .iter()
+            .find_map(|f| f.body().map(|b| b.to_vec()))
+            .ok_or("这封邮件在服务器上已经不存在了")?;
+        if unseen {
+            let _ = s.uid_store(uid.to_string(), "+FLAGS (\\Seen)");
+        }
+        Ok(fix_headers(&raw))
+    })?;
+    mailcache::put_body(dir, &a, folder, uid, &raw);
+    if unseen {
+        set_cached_flag(dir, &a, folder, uid, "seen", true);
+    }
+    Ok(raw)
 }
 
 fn inline_cids(m: &mail_parser::Message, html: &str) -> String {
@@ -797,8 +983,8 @@ fn is_inline_image(p: &mail_parser::MessagePart) -> bool {
     p.content_id().is_some() && p.content_type().map(|c| c.ctype().eq_ignore_ascii_case("image")).unwrap_or(false) && p.attachment_name().is_none()
 }
 
-fn get_blocking(cfg: MailConfig, folder: String, uid: u32) -> Result<MailDetail, String> {
-    let raw = fetch_raw(&cfg, &folder, uid, true)?;
+fn get_blocking(cfg: MailConfig, dir: PathBuf, folder: String, uid: u32) -> Result<MailDetail, String> {
+    let raw = raw_message(&cfg, &dir, &folder, uid, true)?;
     let m = MessageParser::default().parse(&raw).ok_or("邮件解析失败")?;
     let (from_name, from_addr) = first_addr(m.from());
     let references = match m.references() {
@@ -837,29 +1023,30 @@ fn get_blocking(cfg: MailConfig, folder: String, uid: u32) -> Result<MailDetail,
 #[tauri::command]
 pub async fn mail_get(state: State<'_, AppState>, folder: Option<String>, uid: u32) -> Result<MailDetail, String> {
     let cfg = load_config(&state)?;
+    let dir = state.data_dir.clone();
     let folder = folder.unwrap_or_else(|| "INBOX".into());
-    blocking(move || get_blocking(cfg, folder, uid))
+    blocking(move || get_blocking(cfg, dir, folder, uid))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn save_attachment_blocking(cfg: MailConfig, folder: String, uid: u32, index: usize) -> Result<String, String> {
-    let raw = fetch_raw(&cfg, &folder, uid, false)?;
+fn save_attachment_blocking(cfg: MailConfig, dir: PathBuf, folder: String, uid: u32, index: usize) -> Result<String, String> {
+    let raw = raw_message(&cfg, &dir, &folder, uid, false)?;
     let m = MessageParser::default().parse(&raw).ok_or("邮件解析失败")?;
     let a = m.attachments().filter(|a| !is_inline_image(a)).nth(index).ok_or("找不到这个附件")?;
     let name = a
         .attachment_name()
         .map(|s| s.replace(['/', '\\', ':'], "_"))
         .unwrap_or(format!("附件{}", index + 1));
-    let dir = dirs::download_dir().ok_or("找不到下载文件夹")?;
-    let mut path = dir.join(&name);
+    let out_dir = dirs::download_dir().ok_or("找不到下载文件夹")?;
+    let mut path = out_dir.join(&name);
     let mut n = 1;
     while path.exists() {
         let (stem, ext) = match name.rsplit_once('.') {
             Some((s, e)) => (s.to_string(), format!(".{}", e)),
             None => (name.clone(), String::new()),
         };
-        path = dir.join(format!("{} ({}){}", stem, n, ext));
+        path = out_dir.join(format!("{} ({}){}", stem, n, ext));
         n += 1;
     }
     std::fs::write(&path, a.contents()).map_err(|e| e.to_string())?;
@@ -869,53 +1056,59 @@ fn save_attachment_blocking(cfg: MailConfig, folder: String, uid: u32, index: us
 #[tauri::command]
 pub async fn mail_save_attachment(state: State<'_, AppState>, folder: Option<String>, uid: u32, index: usize) -> Result<String, String> {
     let cfg = load_config(&state)?;
+    let dir = state.data_dir.clone();
     let folder = folder.unwrap_or_else(|| "INBOX".into());
-    blocking(move || save_attachment_blocking(cfg, folder, uid, index))
+    blocking(move || save_attachment_blocking(cfg, dir, folder, uid, index))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn flag_blocking(cfg: MailConfig, folder: String, uid: u32, flag: String, on: bool) -> Result<(), String> {
-    let mut s = connect(&cfg)?;
-    select(&mut s, &folder)?;
+fn flag_blocking(cfg: MailConfig, dir: PathBuf, folder: String, uid: u32, flag: String, on: bool) -> Result<(), String> {
     let f = if flag == "flagged" { "\\Flagged" } else { "\\Seen" };
-    s.uid_store(uid.to_string(), format!("{}FLAGS ({})", if on { "+" } else { "-" }, f)).map_err(|e| e.to_string())?;
-    let _ = s.logout();
+    with_session(&cfg, |s| {
+        select(s, &folder)?;
+        s.uid_store(uid.to_string(), format!("{}FLAGS ({})", if on { "+" } else { "-" }, f)).map(|_| ()).map_err(|e| e.to_string())
+    })?;
+    set_cached_flag(&dir, &acct(&cfg), &folder, uid, &flag, on);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn mail_flag(state: State<'_, AppState>, folder: String, uid: u32, flag: String, on: bool) -> Result<(), String> {
     let cfg = load_config(&state)?;
-    blocking(move || flag_blocking(cfg, folder, uid, flag, on)).await.map_err(|e| e.to_string())?
+    let dir = state.data_dir.clone();
+    blocking(move || flag_blocking(cfg, dir, folder, uid, flag, on)).await.map_err(|e| e.to_string())?
 }
 
-fn delete_blocking(cfg: MailConfig, folder: String, uid: u32) -> Result<(), String> {
-    let mut s = connect(&cfg)?;
-    let trash = find_role(&mut s, "trash");
-    select(&mut s, &folder)?;
-    let id = uid.to_string();
-    match trash {
-        Some(t) if t != folder => {
-            if s.uid_mv(&id, &t).is_err() {
-                s.uid_copy(&id, &t).map_err(|e| e.to_string())?;
+fn delete_blocking(cfg: MailConfig, dir: PathBuf, folder: String, uid: u32) -> Result<(), String> {
+    with_session(&cfg, |s| {
+        let trash = find_role(s, "trash");
+        select(s, &folder)?;
+        let id = uid.to_string();
+        match trash {
+            Some(t) if t != folder => {
+                if s.uid_mv(&id, &t).is_err() {
+                    s.uid_copy(&id, &t).map_err(|e| e.to_string())?;
+                    s.uid_store(&id, "+FLAGS (\\Deleted)").map_err(|e| e.to_string())?;
+                    let _ = s.expunge();
+                }
+            }
+            _ => {
                 s.uid_store(&id, "+FLAGS (\\Deleted)").map_err(|e| e.to_string())?;
                 let _ = s.expunge();
             }
         }
-        _ => {
-            s.uid_store(&id, "+FLAGS (\\Deleted)").map_err(|e| e.to_string())?;
-            let _ = s.expunge();
-        }
-    }
-    let _ = s.logout();
+        Ok(())
+    })?;
+    mailcache::remove(&dir, &acct(&cfg), &folder, uid);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn mail_delete(state: State<'_, AppState>, folder: String, uid: u32) -> Result<(), String> {
     let cfg = load_config(&state)?;
-    blocking(move || delete_blocking(cfg, folder, uid)).await.map_err(|e| e.to_string())?
+    let dir = state.data_dir.clone();
+    blocking(move || delete_blocking(cfg, dir, folder, uid)).await.map_err(|e| e.to_string())?
 }
 
 #[derive(Deserialize)]
@@ -983,12 +1176,12 @@ fn send_blocking(cfg: MailConfig, o: Outgoing) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let mailer = smtp_transport(&cfg.smtp_host, cfg.smtp_port, &cfg.smtp_security, cfg.insecure, &cfg.login, &pass)?;
     mailer.send(&email).map_err(|e| format!("发送失败：{}", e))?;
-    if let Ok(mut s) = connect(&cfg) {
-        if let Some(folder) = sent_folder(&mut s) {
+    let _ = with_session(&cfg, |s| {
+        if let Some(folder) = sent_folder(s) {
             let _ = s.append_with_flags(&folder, &email.formatted(), &[imap::types::Flag::Seen]);
         }
-        let _ = s.logout();
-    }
+        Ok(())
+    });
     Ok(())
 }
 

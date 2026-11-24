@@ -67,17 +67,30 @@ function Body({ detail }: { detail: MailDetail }) {
   return <iframe ref={ref} className="mail-frame" title="邮件正文" sandbox="allow-same-origin" srcDoc={src} style={{ height: h }} onLoad={fit} />;
 }
 
+const memo: {
+  cfg: MailConfig | null;
+  folders: MailFolder[];
+  folder: string;
+  lists: Record<string, MailSummary[]>;
+  sel: number | null;
+  detail: MailDetail | null;
+  details: Map<string, MailDetail>;
+  fresh: Record<string, number>;
+} = { cfg: null, folders: [], folder: "INBOX", lists: {}, sel: null, detail: null, details: new Map(), fresh: {} };
+
+const dkey = (folder: string, uid: number) => folder + "|" + uid;
+
 export default function Mail() {
   const { now, go, toast, profile, mailDraft, setMailDraft, markSeen, refreshMail } = useApp();
-  const [cfg, setCfg] = useState<MailConfig | null>(null);
-  const [folders, setFolders] = useState<MailFolder[]>([]);
-  const [folder, setFolder] = useState("INBOX");
-  const [list, setList] = useState<MailSummary[]>([]);
+  const [cfg, setCfg] = useState<MailConfig | null>(memo.cfg);
+  const [folders, setFolders] = useState<MailFolder[]>(memo.folders);
+  const [folder, setFolder] = useState(memo.folder);
+  const [list, setList] = useState<MailSummary[]>(memo.lists[memo.folder] ?? []);
   const [listErr, setListErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
-  const [sel, setSel] = useState<number | null>(null);
-  const [detail, setDetail] = useState<MailDetail | null>(null);
+  const [sel, setSel] = useState<number | null>(memo.sel);
+  const [detail, setDetail] = useState<MailDetail | null>(memo.detail);
   const [detailErr, setDetailErr] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [compose, setCompose] = useState<Compose | null>(null);
@@ -86,52 +99,98 @@ export default function Mail() {
   const cur = folders.find((f) => f.name === folder);
   const isSent = cur?.role === "sent" || cur?.role === "drafts";
 
+  const folderRef = useRef(folder);
+  folderRef.current = folder;
+
+  useEffect(() => {
+    memo.cfg = cfg;
+    memo.folders = folders;
+    memo.folder = folder;
+    memo.lists[folder] = list;
+    memo.sel = sel;
+    memo.detail = detail;
+  }, [cfg, folders, folder, list, sel, detail]);
+
   const loadFolders = useCallback(() => api.mailFolders().then(setFolders).catch(() => undefined), []);
 
   const loadList = useCallback(
     async (f = folder) => {
       setLoading(true);
       try {
-        setList(await api.mailList(f, 80));
-        setListErr(null);
+        const ls = await api.mailList(f, 80);
+        memo.lists[f] = ls;
+        memo.fresh[f] = Date.now();
+        if (folderRef.current === f) {
+          setList(ls);
+          setListErr(null);
+        }
+        const want = ls.slice(0, 10).map((m) => m.uid);
+        if (want.length) api.mailPrefetch(f, want).catch(() => undefined);
       } catch (e) {
-        setListErr(errText(e));
+        if (folderRef.current === f) setListErr(errText(e));
       } finally {
-        setLoading(false);
+        if (folderRef.current === f) setLoading(false);
       }
     },
     [folder],
   );
 
+  const showFolder = async (f: string) => {
+    if (memo.lists[f]?.length) setList(memo.lists[f]);
+    else {
+      const c = await api.mailCached(f).catch(() => null);
+      if (c && folderRef.current === f) {
+        if (c.list.length) setList(c.list);
+        if (c.folders.length) setFolders((fs) => (fs.length ? fs : c.folders));
+      }
+    }
+    if (!memo.fresh[f] || Date.now() - memo.fresh[f] > 60000) loadList(f);
+  };
+
   useEffect(() => {
     api.mailConfig().then((c) => {
       setCfg(c);
       if (c.address && c.hasPassword) {
-        loadFolders();
-        loadList("INBOX");
+        showFolder(folder);
+        if (!memo.fresh.__folders || Date.now() - memo.fresh.__folders > 60000) {
+          memo.fresh.__folders = Date.now();
+          loadFolders();
+        }
       }
     });
   }, []);
 
   const pickFolder = (f: string) => {
+    if (f === folder) return loadList(f);
+    folderRef.current = f;
     setFolder(f);
     setSel(null);
     setDetail(null);
     setList([]);
-    loadList(f);
+    setLoading(false);
+    showFolder(f);
   };
 
   const open = async (uid: number) => {
     setSel(uid);
     setCompose(null);
-    setLoadingDetail(true);
     setDetailErr(null);
+    const k = dkey(folder, uid);
+    const known = memo.details.get(k);
+    const unseen = list.some((m) => m.uid === uid && !m.seen);
+    if (known) {
+      setDetail(known);
+      setLoadingDetail(false);
+      if (!unseen) return;
+    } else setLoadingDetail(true);
     try {
       const d = await api.mailGet(folder, uid);
+      memo.details.set(k, d);
+      if (memo.details.size > 60) memo.details.delete(memo.details.keys().next().value!);
       setDetail(d);
       setList((ls) => ls.map((m) => (m.uid === uid ? { ...m, seen: true } : m)));
       if (folder === "INBOX") markSeen(uid);
-      setFolders((fs) => fs.map((f) => (f.name === folder && list.find((m) => m.uid === uid && !m.seen) ? { ...f, unread: Math.max(0, f.unread - 1) } : f)));
+      if (unseen) setFolders((fs) => fs.map((f) => (f.name === folder ? { ...f, unread: Math.max(0, f.unread - 1) } : f)));
     } catch (e) {
       setDetailErr(errText(e));
       setDetail(null);
@@ -223,6 +282,7 @@ export default function Mail() {
     const uid = detail.uid;
     try {
       await api.mailDelete(folder, uid);
+      memo.details.delete(dkey(folder, uid));
       const idx = list.findIndex((m) => m.uid === uid);
       const rest = list.filter((m) => m.uid !== uid);
       setList(rest);

@@ -135,7 +135,7 @@ export default function App() {
   const refreshMail = useCallback(async () => {
     setMailLoading(true);
     try {
-      const list = await api.mailList("INBOX", 60);
+      const list = await api.mailList("INBOX", 80);
       setMails(list);
       setMailError(null);
     } catch (e) {
@@ -147,9 +147,16 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    let first = true;
     const tick = async () => {
       const cfg = await api.mailConfig().catch(() => null);
-      if (alive && cfg?.hasPassword && cfg.address) refreshMail();
+      if (!alive || !cfg?.hasPassword || !cfg.address) return;
+      if (first) {
+        first = false;
+        const c = await api.mailCached("INBOX").catch(() => null);
+        if (alive && c?.list.length) setMails((m) => (m.length ? m : c.list));
+      }
+      refreshMail();
     };
     tick();
     const t = window.setInterval(tick, 10 * 60 * 1000);
@@ -281,13 +288,11 @@ export default function App() {
 
         <main className="main">
           <header className="head">
-            <div>
-              <div className="date-line">{dateLine}</div>
-              <h1 key={view} className="view-title">
-                {TITLES[view]}
-              </h1>
-            </div>
-            <button type="button" className="btn ghost" onClick={() => setClaudeOpen((o) => !o)}>
+            <h1 key={view} className="view-title">
+              {TITLES[view]}
+            </h1>
+            <div className="date-line grow tline">{dateLine}</div>
+            <button type="button" className="btn ghost sm" onClick={() => setClaudeOpen((o) => !o)}>
               {claudeOpen ? "收起 Claude" : "问 Claude"}
             </button>
           </header>

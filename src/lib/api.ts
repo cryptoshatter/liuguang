@@ -55,6 +55,8 @@ export type MailDetail = MailSummary & {
 };
 export type DataInfo = { dataDir: string; backupDir: string; backups: number; lastBackup: string | null };
 
+let claudeStatusP: Promise<{ found: boolean; path: string | null }> | null = null;
+
 export const api = {
   startupError: () => invoke<string | null>("startup_error"),
   dayState: (day: string) => invoke<{ tasks: Task[]; planned: boolean }>("day_state", { day }),
@@ -81,12 +83,15 @@ export const api = {
   dataInfo: () => invoke<DataInfo>("data_info"),
   backupNow: () => invoke<string>("backup_now"),
   exportAll: (markdown: string) => invoke<string>("export_all", { markdown }),
-  claudeStatus: () => invoke<{ found: boolean; path: string | null }>("claude_status"),
+  claudeStatus: () => (claudeStatusP ??= invoke<{ found: boolean; path: string | null }>("claude_status")),
+  claudeStatusFresh: () => (claudeStatusP = invoke<{ found: boolean; path: string | null }>("claude_status")),
   claudeAsk: (prompt: string) => invoke<string>("claude_ask", { prompt }),
   mailConfig: () => invoke<MailConfig>("mail_config"),
   mailSaveConfig: (config: MailConfig, password: string | null) => invoke<void>("mail_save_config", { config, password }),
   mailFolders: () => invoke<MailFolder[]>("mail_folders"),
-  mailList: (folder = "INBOX", limit = 60) => invoke<MailSummary[]>("mail_list", { folder, limit }),
+  mailCached: (folder: string) => invoke<{ folders: MailFolder[]; list: MailSummary[] }>("mail_cached", { folder }),
+  mailPrefetch: (folder: string, uids: number[]) => invoke<void>("mail_prefetch", { folder, uids }),
+  mailList: (folder = "INBOX", limit = 80) => invoke<MailSummary[]>("mail_list", { folder, limit }),
   mailGet: (folder: string, uid: number) => invoke<MailDetail>("mail_get", { folder, uid }),
   mailSaveAttachment: (folder: string, uid: number, index: number) => invoke<string>("mail_save_attachment", { folder, uid, index }),
   mailFlag: (folder: string, uid: number, flag: "seen" | "flagged", on: boolean) => invoke<void>("mail_flag", { folder, uid, flag, on }),
