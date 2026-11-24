@@ -29,11 +29,26 @@ export type MailConfig = {
   insecure: boolean;
   hasPassword: boolean;
 };
-export type MailSummary = { uid: number; fromName: string; fromAddr: string; subject: string; date: number; seen: boolean };
+export type MailSummary = {
+  uid: number;
+  fromName: string;
+  fromAddr: string;
+  toName: string;
+  subject: string;
+  date: number;
+  seen: boolean;
+  flagged: boolean;
+  attach: boolean;
+  preview: string;
+};
+export type MailFolder = { name: string; label: string; role: string; unread: number; total: number };
 export type MailDetail = MailSummary & {
   to: string[];
   cc: string[];
+  toFull: string[];
+  ccFull: string[];
   text: string;
+  html: string | null;
   attachments: string[];
   messageId: string | null;
   references: string[];
@@ -70,9 +85,12 @@ export const api = {
   claudeAsk: (prompt: string) => invoke<string>("claude_ask", { prompt }),
   mailConfig: () => invoke<MailConfig>("mail_config"),
   mailSaveConfig: (config: MailConfig, password: string | null) => invoke<void>("mail_save_config", { config, password }),
-  mailList: (limit?: number) => invoke<MailSummary[]>("mail_list", { limit }),
-  mailGet: (uid: number) => invoke<MailDetail>("mail_get", { uid }),
-  mailSaveAttachment: (uid: number, index: number) => invoke<string>("mail_save_attachment", { uid, index }),
+  mailFolders: () => invoke<MailFolder[]>("mail_folders"),
+  mailList: (folder = "INBOX", limit = 60) => invoke<MailSummary[]>("mail_list", { folder, limit }),
+  mailGet: (folder: string, uid: number) => invoke<MailDetail>("mail_get", { folder, uid }),
+  mailSaveAttachment: (folder: string, uid: number, index: number) => invoke<string>("mail_save_attachment", { folder, uid, index }),
+  mailFlag: (folder: string, uid: number, flag: "seen" | "flagged", on: boolean) => invoke<void>("mail_flag", { folder, uid, flag, on }),
+  mailDelete: (folder: string, uid: number) => invoke<void>("mail_delete", { folder, uid }),
   mailSend: (mail: { to: string[]; cc: string[]; subject: string; body: string; inReplyTo: string | null; references: string[] }) =>
     invoke<void>("mail_send", { mail }),
   mailTest: () => invoke<string>("mail_test"),

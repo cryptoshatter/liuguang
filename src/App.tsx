@@ -135,7 +135,7 @@ export default function App() {
   const refreshMail = useCallback(async () => {
     setMailLoading(true);
     try {
-      const list = await api.mailList(60);
+      const list = await api.mailList("INBOX", 60);
       setMails(list);
       setMailError(null);
     } catch (e) {
