@@ -10,7 +10,7 @@ const HOLD_MS = 280;
 type Drag = { id: string; mode: "move" | "top" | "bottom"; grab: number; y: number; s: number; e: number; s0: number; e0: number };
 
 export default function Today() {
-  const { now, today, todayApi: t, go, ask, say, settings, setSetting, openClaude, obItems, obState, flash } = useApp();
+  const { now, today, todayApi: t, go, ask, say, settings, setSetting, openAgent, obItems, obState, flash } = useApp();
   const [quick, setQuick] = useState("");
   const [leaving, setLeaving] = useState<Set<string>>(() => new Set());
   const nowMin = minutesOf(now);
@@ -221,7 +221,7 @@ export default function Today() {
     const v = quick.trim();
     if (!v) return;
     setQuick("");
-    openClaude();
+    openAgent();
     await say(v, "me");
     await say(await t.addText(v));
   };
@@ -247,7 +247,7 @@ export default function Today() {
             </button>
           </form>
         )}
-        {!t.planned && t.loaded && <div className="muted small">在右边和 Claude 定好今天做什么，就会排进这里。</div>}
+        {!t.planned && t.loaded && <div className="muted small">在右边和 Agent 定好今天做什么，就会排进这里。</div>}
         <div className={"timeline" + (drag ? " dragging" : "")} ref={tlRef} style={{ minHeight: minH }}>
           <div className="seg" style={{ top: px(AM_START), height: px(LUNCH_START) - px(AM_START) }} />
           <div className="seg" style={{ top: px(PM_START), height: px(DAY_END) - px(PM_START) }} />
@@ -353,7 +353,7 @@ export default function Today() {
                 className="btn ghost sm"
                 onClick={() => ask(`帮我拆一下「${cur.title}」`, `把这个项目任务拆成 3 到 5 个能直接动手的小步骤，每步一行，带大致分钟数：${cur.title}（共 ${cur.minutes} 分钟）`)}
               >
-                让 Claude 拆一下
+                让 Agent 拆一下
               </button>
             </div>
           )}

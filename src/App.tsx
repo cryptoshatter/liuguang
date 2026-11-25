@@ -2,14 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AppCtx, type Ctx, type MailDraft, type View } from "./ctx";
-import { api, errText, type ChatMsg, type MailSummary } from "./lib/api";
+import { api, errText, type AgentInfo, type ChatMeta, type ChatMsg, type MailSummary } from "./lib/api";
+import { APP_WHO, encodeWho, shortName } from "./lib/agents";
 import { preamble } from "./lib/claude";
 import { dayKindLabel, isWorkday } from "./lib/calendar";
 import { ensureNotify, notify } from "./lib/notify";
 import { readLinks, readObItems, readProfile, readStages } from "./lib/profile";
 import { AM_START, DAY_END, WD, applyHours, dayKey, daysBetween, minutesOf, pad, parseDay } from "./lib/time";
 import { useToday } from "./today";
-import ClaudePanel from "./components/ClaudePanel";
+import AgentPanel from "./components/AgentPanel";
 import Updater from "./components/Updater";
 import Setup from "./components/Setup";
 import Today from "./views/Today";
@@ -35,7 +36,8 @@ const NAV: View[] = ["today", "cal", "log", "onboard", "mail", "learn"];
 export default function App() {
   const [now, setNow] = useState(() => new Date());
   const [view, setView] = useState<View>("today");
-  const [claudeOpen, setClaudeOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [settings, setSettings] = useState<Record<string, string> | null>(null);
   const [chat, setChat] = useState<ChatMsg[]>([]);
   const [busy, setBusy] = useState(false);
@@ -80,6 +82,18 @@ export default function App() {
   }, [today]);
 
   useEffect(() => {
+    api.agents().then(setAgents).catch(() => setAgents([]));
+  }, []);
+
+  const refreshAgents = useCallback(async () => {
+    setAgents(await api.agentsFresh());
+  }, []);
+
+  const usable = agents.filter((a) => a.found);
+  const agent = usable.find((a) => a.id === s.agent_current) ?? usable[0] ?? null;
+  const agentModel = agent ? (s["agent_model:" + agent.id] ?? (agent.kind === "api" ? agent.model ?? "" : "")) : "";
+
+  useEffect(() => {
     api.onboardingState().then(setObState);
   }, [dataVersion]);
 
@@ -104,33 +118,43 @@ export default function App() {
   }, []);
 
   const push = useCallback(
-    async (role: "me" | "ai", text: string) => {
-      setChat((c) => [...c, { role, text }].slice(-60));
-      await api.chatAdd(today, role, text);
+    async (m: ChatMsg) => {
+      setChat((c) => [...c, m].slice(-60));
+      await api.chatAdd(today, m);
     },
     [today],
   );
 
+  const who = agent ? encodeWho({ id: agent.id, name: shortName(agent), model: agentModel }) : encodeWho(APP_WHO);
+
   const ask = useCallback<Ctx["ask"]>(
     async (label, prompt, opts) => {
-      setClaudeOpen(true);
-      await push("me", label);
+      setPanelOpen(true);
+      await push({ role: "me", text: label });
+      if (!agent) {
+        await push({ role: "ai", text: "※ 还没有可用的 Agent，到设置里接入一个。", agent: encodeWho(APP_WHO) });
+        return null;
+      }
       setBusy(true);
       try {
-        const raw = await api.claudeAsk(preamble(profile, new Date()) + "\n\n" + prompt);
-        await push("ai", opts?.show ? opts.show(raw) : raw);
+        const raw = await api.agentAsk(agent.id, agentModel, preamble(profile, new Date()) + "\n\n" + prompt);
+        if (!opts?.hold) await push({ role: "ai", text: opts?.show ? opts.show(raw) : raw, agent: who });
         return raw;
       } catch (e) {
-        await push("ai", "※ " + errText(e));
+        await push({ role: "ai", text: "※ " + errText(e), agent: who });
         return null;
       } finally {
         setBusy(false);
       }
     },
-    [profile, push],
+    [profile, push, agent, agentModel, who],
   );
 
-  const say = useCallback(async (text: string, role: "me" | "ai" = "ai") => push(role, text), [push]);
+  const say = useCallback(
+    async (text: string, role: "me" | "ai" = "ai", meta?: ChatMeta) =>
+      push(role === "me" ? { role, text } : { role, text, agent: meta ? who : encodeWho(APP_WHO), meta: meta ?? null }),
+    [push, who],
+  );
 
   const refreshMail = useCallback(async () => {
     setMailLoading(true);
@@ -227,9 +251,17 @@ export default function App() {
     todayApi,
     ask,
     say,
+    agents,
+    agent,
+    agentModel,
+    pickAgent: async (id: string, model?: string) => {
+      await setSetting("agent_current", id);
+      if (model != null) await setSetting("agent_model:" + id, model);
+    },
+    refreshAgents,
     busy,
     setFocus,
-    openClaude: () => setClaudeOpen(true),
+    openAgent: () => setPanelOpen(true),
     mails,
     mailError,
     mailLoading,
@@ -292,8 +324,8 @@ export default function App() {
               {TITLES[view]}
             </h1>
             <div className="date-line grow tline">{dateLine}</div>
-            <button type="button" className="btn ghost sm" onClick={() => setClaudeOpen((o) => !o)}>
-              {claudeOpen ? "收起 Claude" : "问 Claude"}
+            <button type="button" className="btn ghost sm" onClick={() => setPanelOpen((o) => !o)}>
+              {panelOpen ? "收起 Agent" : "问 Agent"}
             </button>
           </header>
           <div key={view} className="view">
@@ -307,7 +339,7 @@ export default function App() {
           </div>
         </main>
 
-        {claudeOpen && <ClaudePanel chat={chat} focus={focusRef} onClose={() => setClaudeOpen(false)} />}
+        {panelOpen && <AgentPanel chat={chat} focus={focusRef} onClose={() => setPanelOpen(false)} />}
         <Updater />
         {toastText && <div className="toast">{toastText}</div>}
       </div>

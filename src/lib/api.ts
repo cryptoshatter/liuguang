@@ -15,7 +15,23 @@ export type Task = {
 
 export type Note = { id: number; day: string; text: string; createdAt: string };
 export type Goal = { id: string; stage: number; title: string; done: boolean; doneAt: string | null };
-export type ChatMsg = { role: "me" | "ai"; text: string };
+export type ChangeItem = { time?: string; title: string; tag: string };
+export type ChangeCard = { view: string; items: ChangeItem[] };
+export type ChatMeta = { cards?: ChangeCard[]; suggest?: string[] };
+export type ChatMsg = { role: "me" | "ai"; text: string; agent?: string | null; meta?: ChatMeta | null };
+export type AgentInfo = {
+  id: string;
+  name: string;
+  kind: "local" | "api";
+  found: boolean;
+  path: string | null;
+  models: string[];
+  base: string | null;
+  apiKind: "openai" | "anthropic" | null;
+  model: string | null;
+  hasKey: boolean;
+};
+export type ApiAgent = { id: string; name: string; kind: "openai" | "anthropic"; base: string; model: string; models: string[] };
 export type MailConfig = {
   address: string;
   login: string;
@@ -55,7 +71,7 @@ export type MailDetail = MailSummary & {
 };
 export type DataInfo = { dataDir: string; backupDir: string; backups: number; lastBackup: string | null };
 
-let claudeStatusP: Promise<{ found: boolean; path: string | null }> | null = null;
+let agentsP: Promise<AgentInfo[]> | null = null;
 
 export const api = {
   startupError: () => invoke<string | null>("startup_error"),
@@ -76,16 +92,30 @@ export const api = {
   goalAdd: (id: string, stage: number, title: string) => invoke<void>("goal_add", { id, stage, title }),
   goalSetDone: (id: string, done: boolean) => invoke<void>("goal_set_done", { id, done }),
   goalDelete: (id: string) => invoke<void>("goal_delete", { id }),
-  chatList: (day: string) => invoke<ChatMsg[]>("chat_list", { day }),
-  chatAdd: (day: string, role: string, text: string) => invoke<void>("chat_add", { day, role, text }),
+  chatList: (day: string) =>
+    invoke<(Omit<ChatMsg, "meta"> & { meta: string | null })[]>("chat_list", { day }).then((l) =>
+      l.map((m) => {
+        let meta: ChatMeta | null = null;
+        try {
+          meta = m.meta ? JSON.parse(m.meta) : null;
+        } catch {}
+        return { ...m, meta };
+      }),
+    ),
+  chatAdd: (day: string, m: ChatMsg) =>
+    invoke<void>("chat_add", { day, role: m.role, text: m.text, agent: m.agent ?? null, meta: m.meta ? JSON.stringify(m.meta) : null }),
   settingsAll: () => invoke<Record<string, string>>("settings_all"),
   settingSet: (key: string, value: string) => invoke<void>("setting_set", { key, value }),
   dataInfo: () => invoke<DataInfo>("data_info"),
   backupNow: () => invoke<string>("backup_now"),
   exportAll: (markdown: string) => invoke<string>("export_all", { markdown }),
-  claudeStatus: () => (claudeStatusP ??= invoke<{ found: boolean; path: string | null }>("claude_status")),
-  claudeStatusFresh: () => (claudeStatusP = invoke<{ found: boolean; path: string | null }>("claude_status")),
-  claudeAsk: (prompt: string) => invoke<string>("claude_ask", { prompt }),
+  agents: () => (agentsP ??= invoke<AgentInfo[]>("agents_list")),
+  agentsFresh: () => (agentsP = invoke<AgentInfo[]>("agents_list")),
+  agentApiSave: (agent: ApiAgent, key: string | null) => invoke<void>("agent_api_save", { agent, key }),
+  agentApiDelete: (id: string) => invoke<void>("agent_api_delete", { id }),
+  agentModels: (agent: ApiAgent, key: string | null) => invoke<string[]>("agent_models", { agent, key }),
+  agentTest: (agent: ApiAgent, key: string | null) => invoke<string>("agent_test", { agent, key }),
+  agentAsk: (id: string, model: string, prompt: string) => invoke<string>("agent_ask", { id, model, prompt }),
   mailConfig: () => invoke<MailConfig>("mail_config"),
   mailSaveConfig: (config: MailConfig, password: string | null) => invoke<void>("mail_save_config", { config, password }),
   mailFolders: () => invoke<MailFolder[]>("mail_folders"),

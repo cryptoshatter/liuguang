@@ -48,6 +48,10 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX chat_day ON chat(day);
     "#,
+    r#"
+    ALTER TABLE chat ADD COLUMN agent TEXT;
+    ALTER TABLE chat ADD COLUMN meta TEXT;
+    "#,
 ];
 
 pub fn now() -> String {

@@ -298,26 +298,28 @@ pub fn goal_delete(state: State<AppState>, id: String) -> R<()> {
 pub struct ChatMsg {
     role: String,
     text: String,
+    agent: Option<String>,
+    meta: Option<String>,
 }
 
 #[tauri::command]
 pub fn chat_list(state: State<AppState>, day: String) -> R<Vec<ChatMsg>> {
     let c = state.conn.lock().map_err(e)?;
     let mut st = c
-        .prepare("SELECT role, text FROM (SELECT id, role, text FROM chat WHERE day = ?1 ORDER BY id DESC LIMIT 40) ORDER BY id")
+        .prepare("SELECT role, text, agent, meta FROM (SELECT id, role, text, agent, meta FROM chat WHERE day = ?1 ORDER BY id DESC LIMIT 40) ORDER BY id")
         .map_err(e)?;
     let rows = st
-        .query_map(params![day], |r| Ok(ChatMsg { role: r.get(0)?, text: r.get(1)? }))
+        .query_map(params![day], |r| Ok(ChatMsg { role: r.get(0)?, text: r.get(1)?, agent: r.get(2)?, meta: r.get(3)? }))
         .map_err(e)?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(e)
 }
 
 #[tauri::command]
-pub fn chat_add(state: State<AppState>, day: String, role: String, text: String) -> R<()> {
+pub fn chat_add(state: State<AppState>, day: String, role: String, text: String, agent: Option<String>, meta: Option<String>) -> R<()> {
     let c = state.conn.lock().map_err(e)?;
     c.execute(
-        "INSERT INTO chat(day, role, text, created_at) VALUES(?1, ?2, ?3, ?4)",
-        params![day, role, text, now()],
+        "INSERT INTO chat(day, role, text, created_at, agent, meta) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![day, role, text, now(), agent, meta],
     )
     .map_err(e)?;
     Ok(())

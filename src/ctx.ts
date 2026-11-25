@@ -1,11 +1,11 @@
 import { createContext, useContext, useEffect } from "react";
-import type { MailSummary } from "./lib/api";
+import type { AgentInfo, ChatMeta, MailSummary } from "./lib/api";
 import type { Link, ObItem, Profile, Stage } from "./lib/profile";
 import type { TodayApi } from "./today";
 
 export type View = "today" | "cal" | "log" | "onboard" | "mail" | "learn" | "settings";
 
-export type AskOpts = { show?: (raw: string) => string };
+export type AskOpts = { show?: (raw: string) => string; hold?: boolean };
 
 export type MailDraft = { reply: boolean; to?: string; cc?: string; subject?: string; body: string };
 
@@ -22,10 +22,15 @@ export type Ctx = {
   setSetting: (k: string, v: string) => Promise<void>;
   todayApi: TodayApi;
   ask: (label: string, prompt: string, opts?: AskOpts) => Promise<string | null>;
-  say: (text: string, role?: "me" | "ai") => Promise<void>;
+  say: (text: string, role?: "me" | "ai", meta?: ChatMeta) => Promise<void>;
+  agents: AgentInfo[];
+  agent: AgentInfo | null;
+  agentModel: string;
+  pickAgent: (id: string, model?: string) => Promise<void>;
+  refreshAgents: () => Promise<void>;
   busy: boolean;
   setFocus: (f: (() => string) | null) => void;
-  openClaude: () => void;
+  openAgent: () => void;
   mails: MailSummary[];
   mailError: string | null;
   mailLoading: boolean;
