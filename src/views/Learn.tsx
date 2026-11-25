@@ -129,7 +129,7 @@ export default function Learn() {
               保存
             </button>
             <button type="button" className="btn ghost" onClick={goalsFromPlan} disabled={!plan.trim()}>
-              让 Claude 拆成本周目标
+              让 Agent 拆成本周目标
             </button>
           </div>
         </div>
@@ -205,7 +205,7 @@ export default function Learn() {
             <div className="row-btns pad-top">
               {sel === current && (
                 <button type="button" className="btn ghost" onClick={quiz}>
-                  让 Claude 出 5 道练习题
+                  让 Agent 出 5 道练习题
                 </button>
               )}
               {sel === current && current < STAGES.length - 1 && (

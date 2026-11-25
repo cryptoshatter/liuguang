@@ -24,7 +24,7 @@ export const taskLines = (tasks: Task[]) =>
         .join("\n")
     : "（还没有任务）";
 
-export const ACTIONS_PROTOCOL = `需要改动数据时，在回答最后附一个 \`\`\`json 代码块，内容是 {"actions":[...]}，按顺序执行；不要把动作写进正文，也不要说「已加」之类却不附代码块。可用动作：
+export const ACTIONS_PROTOCOL = `每次回答最后都附一个 \`\`\`json 代码块，内容是 {"actions":[...],"suggest":[...]}。actions 是要改动的数据，按顺序执行，不需要改动就写空数组；不要把动作写进正文，也不要说「已加」之类却不附动作。suggest 是 3 条我接下来最可能对你说的话（推荐回复），见文末要求。可用动作：
 {"do":"task.add","title":"任务名","minutes":60,"start":"15:00","day":"YYYY-MM-DD"}  day 省略为今天；start 省略时自动排进今天的空档
 {"do":"task.edit","id":"任务id","title":"新名字","minutes":30,"start":"10:00","end":"11:00"}  只写要改的字段；改时间后和它重叠的任务会自动往后让位
 {"do":"task.done","id":"任务id","done":true}
@@ -47,7 +47,8 @@ export const ACTIONS_PROTOCOL = `需要改动数据时，在回答最后附一�
 {"do":"setting","key":"user_name|leader_name|project_name|join_date|about|report_head|work_start|lunch_start|lunch_end|work_end","value":"值"}
 {"do":"links.set","links":[{"label":"名字","url":"https://..."}]}
 {"do":"go","view":"today|cal|log|onboard|mail|learn|settings"}
-规则：时间流只放项目工作；日志和周报只记项目工作和学习，不写入职手续和个人事务；不编造用户没说过的工作内容，要补日志但不知道那天做了什么时，只问一句「那天做了什么？」；到了结束时间的任务会自动算完成；不需要改动就不附代码块。`;
+规则：时间流只放项目工作；日志和周报只记项目工作和学习，不写入职手续和个人事务；不编造用户没说过的工作内容，要补日志但不知道那天做了什么时，只问一句「那天做了什么？」；到了结束时间的任务会自动算完成。
+推荐回复要求：用我的口吻，每条不超过 16 个字，是你用上面的动作能直接办到、或能直接回答的一句话；紧扣刚才的对话和你刚做的改动（比如刚加了会议，就推「会议改成 45 分钟」这类后续）、我正在看的页面、现在的时间点和今天还没做的任务，写出具体的任务名或时间；三条方向不同；不要泛泛的「还有什么」「谢谢」，不要重复我刚说过的话。`;
 
 export type PlanActions = {
   add?: { title: string; minutes?: number; start?: string; end?: string }[];

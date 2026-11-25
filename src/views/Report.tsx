@@ -239,7 +239,7 @@ export default function Report() {
             重新生成
           </button>
           <button type="button" className="btn ghost" onClick={polish}>
-            让 Claude 润色
+            让 Agent 润色
           </button>
         </div>
       </section>
