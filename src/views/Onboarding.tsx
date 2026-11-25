@@ -8,14 +8,6 @@ import { daysBetween, md, parseDay, uid } from "../lib/time";
 export default function Onboarding() {
   const { now, obItems, obState, setSetting, bumpData, flash, profile } = useApp();
   const [draft, setDraft] = useState({ title: "", due: "", group: "" });
-  const [opened, setOpened] = useState<Set<string>>(() => new Set());
-  const flip = (k: string) =>
-    setOpened((o) => {
-      const n = new Set(o);
-      if (n.has(k)) n.delete(k);
-      else n.add(k);
-      return n;
-    });
   const total = obItems.length;
   const done = obItems.filter((o) => obState[o.id]).length;
 
@@ -33,32 +25,31 @@ export default function Onboarding() {
 
   const remove = (id: string) => setSetting("ob_items", JSON.stringify(obItems.filter((o) => o.id !== id)));
 
-  const later = (o: { due: string }) => !!o.due && daysBetween(now, parseDay(o.due)) > 30;
-  const groups = groupOb(obItems)
-    .map((g) => {
-      const todo = g.items.filter((o) => !obState[o.id]);
-      return { ...g, done: g.items.filter((o) => obState[o.id]), soon: todo.filter((o) => !later(o)), later: todo.filter(later) };
-    })
-    .sort((a, b) => Number(!a.soon.length && !a.later.length) - Number(!b.soon.length && !b.later.length) || Number(!a.soon.length) - Number(!b.soon.length));
+  const dmd = (s: string) => {
+    const d = parseDay(s);
+    return (d.getFullYear() !== now.getFullYear() ? d.getFullYear() + "/" : "") + md(d);
+  };
+  const groups = groupOb(obItems).map((g) => ({ ...g, done: g.items.filter((o) => obState[o.id]).length }));
+  const cur = groups.findIndex((g) => g.done < g.items.length);
+  const todayAt = groups.findIndex((g) => !g.last || daysBetween(now, parseDay(g.last)) >= 0);
 
   const row = (o: (typeof obItems)[number]) => {
     const isDone = !!obState[o.id];
     const days = o.due ? daysBetween(now, parseDay(o.due)) : null;
-    let label = o.due ? md(parseDay(o.due)) : "";
+    let label = o.due ? dmd(o.due) : "";
     let red = false;
-    if (isDone) label = "已完成";
-    else if (days != null && days < 0) {
+    if (!isDone && days != null && days < 0) {
       label = `逾期 ${-days} 天`;
       red = true;
-    } else if (days === 0) {
+    } else if (!isDone && days === 0) {
       label = "今天截止";
       red = true;
-    } else if (days != null && days <= 7) {
+    } else if (!isDone && days != null && days <= 7) {
       label = `剩 ${days} 天`;
       red = true;
     }
     return (
-      <div key={o.id} className={"ob-item" + fl(flash, o.id)}>
+      <div key={o.id} className={"ob-item" + (isDone ? " is-done" : "") + fl(flash, o.id)}>
         <Check on={isDone} top onClick={() => toggle(o.id)} label={"切换完成：" + o.title} />
         <div className="grow min0">
           <div className={"strike" + (isDone ? " struck" : "")}>{o.title}</div>
@@ -71,16 +62,6 @@ export default function Onboarding() {
       </div>
     );
   };
-
-  const fold = (key: string, n: number, text: string, items: typeof obItems) =>
-    n > 0 && (
-      <>
-        <button type="button" className="ob-fold" onClick={() => flip(key)} aria-expanded={opened.has(key)}>
-          {text} {n} 项<span>{opened.has(key) ? "收起" : "展开"}</span>
-        </button>
-        {opened.has(key) && items.map(row)}
-      </>
-    );
 
   return (
     <div className="stack">
@@ -97,18 +78,47 @@ export default function Onboarding() {
         </section>
       )}
 
-      <section className="ob-grid">
-        {groups.map((g) => (
-          <div key={g.title} className="ob-group">
-            <div className="ob-group-head">
-              <h2>{g.title}</h2>
-              <span className="mono tiny ink2">{g.soon.length || g.later.length ? g.sub : "已全部完成"}</span>
+      <section className="ob-tl">
+        {groups.map((g, i) => (
+          <div key={g.title}>
+            {i === todayAt && (
+              <div className="ob-today">
+                <span>今天 {md(now)}</span>
+                <i />
+                <b />
+              </div>
+            )}
+            <div className={"ob-stage" + (g.done === g.items.length ? " done" : i === cur ? " now" : i > cur && todayAt >= 0 && i >= todayAt ? " future" : "")}>
+              <div className="ob-date">
+                {g.last && (
+                  <>
+                    <b>{dmd(g.last)}</b>
+                    <span>前</span>
+                  </>
+                )}
+              </div>
+              <div className="ob-rail">
+                <i />
+              </div>
+              <div className="ob-body">
+                <div className="ob-stage-head">
+                  <h2>{g.title}</h2>
+                  <span>
+                    {g.done} / {g.items.length}
+                  </span>
+                </div>
+                {g.items.map(row)}
+              </div>
             </div>
-            {g.soon.map(row)}
-            {fold(g.title + ":later", g.later.length, "以后再办", g.later)}
-            {fold(g.title + ":done", g.done.length, "已完成", g.done)}
           </div>
         ))}
+        {todayAt === -1 && groups.length > 0 && (
+          <div className="ob-today">
+            <span>今天 {md(now)}</span>
+            <i />
+            <b />
+          </div>
+        )}
       </section>
       <form
         className="inline-form ob-add"
