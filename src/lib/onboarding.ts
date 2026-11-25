@@ -1,7 +1,6 @@
 import type { ObItem } from "./profile";
-import { md, parseDay } from "./time";
 
-export type ObGroup = { title: string; sub: string; items: ObItem[] };
+export type ObGroup = { title: string; first: string; last: string; items: ObItem[] };
 
 const byDue = (a: ObItem, b: ObItem) => (a.due || "9999").localeCompare(b.due || "9999");
 
@@ -11,10 +10,12 @@ export function groupOb(items: ObItem[]): ObGroup[] {
     const k = o.group || "待办";
     map.set(k, [...(map.get(k) ?? []), o]);
   }
-  return [...map.entries()].map(([title, list]) => {
-    const last = list.map((o) => o.due).filter(Boolean).sort().pop();
-    return { title, sub: last ? md(parseDay(last)) + " 前" : "", items: list };
-  });
+  return [...map.entries()]
+    .map(([title, list]) => {
+      const dues = list.map((o) => o.due).filter(Boolean).sort();
+      return { title, first: dues[0] ?? "", last: dues[dues.length - 1] ?? "", items: list };
+    })
+    .sort((a, b) => (a.last || "9999").localeCompare(b.last || "9999"));
 }
 
 export const pendingOb = (items: ObItem[], state: Record<string, boolean>) => [...items].sort(byDue).filter((o) => !state[o.id]);
