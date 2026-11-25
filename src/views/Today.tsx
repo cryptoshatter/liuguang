@@ -1,12 +1,16 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { fl, useApp } from "../ctx";
 import { pendingOb } from "../lib/onboarding";
+import { MIN_LEN, fitSpan, settle, snap } from "../lib/plan";
 import { AM_START, DAY_END, LUNCH_START, PM_START, daysBetween, dur, fmt, md, minutesOf, pad, parseDay } from "../lib/time";
 
 const LUNCH_PX = 30;
+const HOLD_MS = 280;
+
+type Drag = { id: string; mode: "move" | "top" | "bottom"; grab: number; y: number; s: number; e: number; s0: number; e0: number };
 
 export default function Today() {
-  const { now, today, todayApi: t, go, ask, say, settings, setSetting, openClaude, obItems, obState, flash } = useApp();
+  const { now, today, todayApi: t, go, ask, say, settings, setSetting, openAgent, obItems, obState, flash } = useApp();
   const [quick, setQuick] = useState("");
   const [leaving, setLeaving] = useState<Set<string>>(() => new Set());
   const nowMin = minutesOf(now);
@@ -29,7 +33,134 @@ export default function Today() {
     if (m < PM_START) return 10 + am + ((m - LUNCH_START) / (PM_START - LUNCH_START)) * lunchPx;
     return 10 + am + lunchPx + (m - PM_START) * k;
   };
+  const toMin = (y: number) => {
+    const am = (LUNCH_START - AM_START) * k;
+    const v = y - 10;
+    if (v <= am) return AM_START + v / k;
+    if (v < am + lunchPx) return LUNCH_START + ((v - am) / lunchPx) * (PM_START - LUNCH_START);
+    return PM_START + (v - am - lunchPx) / k;
+  };
   const inLunch = (m: number) => m > LUNCH_START && m < PM_START;
+
+  const [drag, setDrag] = useState<Drag | null>(null);
+  const [pressing, setPressing] = useState<string | null>(null);
+  const [landing, setLanding] = useState<string | null>(null);
+  const press = useRef<{ id: string; x: number; y: number; timer: number } | null>(null);
+  const live = useRef({ t, drag, toMin, px });
+  live.current = { t, drag, toMin, px };
+  const tlY = (clientY: number) => clientY - (tlRef.current?.getBoundingClientRect().top ?? 0);
+
+  const step = (d: Drag, clientY: number): Drag => {
+    const y = tlY(clientY);
+    const { toMin: tm, t: api } = live.current;
+    if (d.mode === "move") {
+      const [s, e] = fitSpan(snap(tm(y - d.grab)), d.e0 - d.s0);
+      return { ...d, y, s, e };
+    }
+    const am = d.s0 < LUNCH_START;
+    if (d.mode === "bottom") {
+      const e = Math.max(d.s0 + MIN_LEN, Math.min(am ? LUNCH_START : DAY_END, snap(tm(y))));
+      return { ...d, y, e };
+    }
+    const prev = api.scheduled.filter((x) => x.id !== d.id && x.end! <= d.s0).reduce((m, x) => Math.max(m, x.end!), am ? AM_START : PM_START);
+    const s = Math.min(d.e0 - MIN_LEN, Math.max(prev, snap(tm(y))));
+    return { ...d, y, s };
+  };
+
+  const finish = async (d: Drag) => {
+    setDrag(null);
+    document.body.classList.remove("tl-drag", "tl-move", "tl-resize");
+    if (d.s === d.s0 && d.e === d.e0) return;
+    const ok = await live.current.t.move(d.id, d.s, d.e);
+    if (ok) {
+      setLanding(d.id);
+      window.setTimeout(() => setLanding((v) => (v === d.id ? null : v)), 360);
+    }
+  };
+
+  const begin = (id: string, mode: Drag["mode"], clientY: number) => {
+    const x = live.current.t.scheduled.find((v) => v.id === id);
+    if (!x) return;
+    const y = tlY(clientY);
+    document.body.classList.add("tl-drag", mode === "move" ? "tl-move" : "tl-resize");
+    setDrag({ id, mode, grab: y - live.current.px(x.start!), y, s: x.start!, e: x.end!, s0: x.start!, e0: x.end! });
+  };
+
+  const cancelPress = () => {
+    if (press.current) window.clearTimeout(press.current.timer);
+    press.current = null;
+    setPressing(null);
+  };
+
+  const onBlockDown = (e: React.PointerEvent, id: string) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+    const edge = (e.target as HTMLElement).dataset.edge as "top" | "bottom" | undefined;
+    e.preventDefault();
+    if (edge) {
+      begin(id, edge, e.clientY);
+      return;
+    }
+    cancelPress();
+    const cy = e.clientY;
+    setPressing(id);
+    press.current = {
+      id,
+      x: e.clientX,
+      y: cy,
+      timer: window.setTimeout(() => {
+        press.current = null;
+        setPressing(null);
+        begin(id, "move", cy);
+      }, HOLD_MS),
+    };
+  };
+
+  useEffect(() => {
+    const mv = (e: PointerEvent) => {
+      const p = press.current;
+      if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 6) cancelPress();
+      const d = live.current.drag;
+      if (d) setDrag(step(d, e.clientY));
+    };
+    const up = () => {
+      cancelPress();
+      const d = live.current.drag;
+      if (!d) return;
+      const pv = settle(live.current.t.tasks, d.id, d.s, d.e);
+      if (pv.ok) finish(d);
+      else {
+        setDrag(null);
+        document.body.classList.remove("tl-drag", "tl-move", "tl-resize");
+      }
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && live.current.drag) {
+        setDrag(null);
+        document.body.classList.remove("tl-drag", "tl-move", "tl-resize");
+        return;
+      }
+      const tag = (e.target as HTMLElement)?.tagName;
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z" && tag !== "INPUT" && tag !== "TEXTAREA" && !(e.target as HTMLElement)?.isContentEditable) {
+        e.preventDefault();
+        live.current.t.undoMove();
+      }
+    };
+    window.addEventListener("pointermove", mv);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("pointermove", mv);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      window.removeEventListener("keydown", key);
+      document.body.classList.remove("tl-drag", "tl-move", "tl-resize");
+    };
+  }, []);
+
+  const preview = drag ? settle(t.tasks, drag.id, drag.s, drag.e) : null;
+  const shown = preview ? preview.tasks.filter((x) => x.start != null) : t.scheduled;
+  const bad = !!preview && !preview.ok;
   const minH = Math.ceil(0.6 * (LUNCH_START - AM_START + DAY_END - PM_START) + lunchPx + 24);
   const MARKS: [number, string][] = [
     [AM_START, "上班"],
@@ -90,7 +221,7 @@ export default function Today() {
     const v = quick.trim();
     if (!v) return;
     setQuick("");
-    openClaude();
+    openAgent();
     await say(v, "me");
     await say(await t.addText(v));
   };
@@ -114,21 +245,10 @@ export default function Today() {
             <button type="submit" className="btn solid">
               加入
             </button>
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={async () => {
-                openClaude();
-                await say("把没做完的往后顺延", "me");
-                await say(await t.reflowNow());
-              }}
-            >
-              顺延重排
-            </button>
           </form>
         )}
-        {!t.planned && t.loaded && <div className="muted small">在右边和 Claude 定好今天做什么，就会排进这里。</div>}
-        <div className="timeline" ref={tlRef} style={{ minHeight: minH }}>
+        {!t.planned && t.loaded && <div className="muted small">在右边和 Agent 定好今天做什么，就会排进这里。</div>}
+        <div className={"timeline" + (drag ? " dragging" : "")} ref={tlRef} style={{ minHeight: minH }}>
           <div className="seg" style={{ top: px(AM_START), height: px(LUNCH_START) - px(AM_START) }} />
           <div className="seg" style={{ top: px(PM_START), height: px(DAY_END) - px(PM_START) }} />
           <div className="rail" style={{ top: px(AM_START), height: px(LUNCH_START) - px(AM_START) }} />
@@ -155,18 +275,37 @@ export default function Today() {
               </span>
             </span>
           </div>
-          {t.scheduled.map((x) => {
+          {drag && !bad && <div className="drop-mark" style={{ top: px(drag.s), height: px(drag.e) - px(drag.s) }} />}
+          {drag?.mode === "move" && <div className={"block-ghost" + (bad ? " bad" : "")} style={{ top: px(drag.s) + 1, height: px(drag.e) - px(drag.s) - 2 }} />}
+          {shown.map((x) => {
             const st = status(x);
-            const label = st === "now" ? "进行中" : st === "todo" && x.pinned ? "固定" : "";
+            const label = st === "now" ? "进行中" : "";
+            const mine = drag?.id === x.id;
+            const lifted = mine && drag!.mode === "move";
             const h = px(x.end!) - px(x.start!) - 2;
             const short = h < 50;
+            const lo = px(AM_START);
+            const hi = px(DAY_END) - h - 2;
+            const top = lifted ? Math.max(lo, Math.min(hi, drag!.y - drag!.grab)) : px(x.start!) + 1;
+            const cls = [
+              "block",
+              st,
+              short && "short",
+              !x.done && "movable",
+              pressing === x.id && "pressing",
+              lifted && "lifted",
+              mine && !lifted && "resizing",
+              mine && bad && "bad",
+              landing === x.id && "landing",
+              leaving.has(x.id) && "leaving",
+            ]
+              .filter(Boolean)
+              .join(" ");
             return (
-              <div
-                key={x.id}
-                className={"block " + st + (short ? " short" : "") + fl(flash, x.id) + (leaving.has(x.id) ? " leaving" : "")}
-                style={{ top: px(x.start!) + 1, height: h }}
-              >
+              <div key={x.id} className={cls + fl(flash, x.id)} style={{ top, height: h }} onPointerDown={x.done ? undefined : (e) => onBlockDown(e, x.id)}>
                 {st === "now" && <div className="block-ink" style={{ height: ((nowMin - x.start!) / (x.end! - x.start!)) * 100 + "%" }} />}
+                {!x.done && <span className="block-edge top" data-edge="top" />}
+                {!x.done && <span className="block-edge bottom" data-edge="bottom" />}
                 <div className="block-main">
                   <span className="block-title tline">{x.title}</span>
                   <span className="block-range">
@@ -180,9 +319,6 @@ export default function Today() {
                       没做完
                     </button>
                   )}
-                  <button type="button" onClick={() => t.togglePin(x.id)}>
-                    {x.pinned ? "取消固定" : "固定"}
-                  </button>
                   <button type="button" onClick={() => removeTask(x.id)}>
                     删除
                   </button>
@@ -217,7 +353,7 @@ export default function Today() {
                 className="btn ghost sm"
                 onClick={() => ask(`帮我拆一下「${cur.title}」`, `把这个项目任务拆成 3 到 5 个能直接动手的小步骤，每步一行，带大致分钟数：${cur.title}（共 ${cur.minutes} 分钟）`)}
               >
-                让 Claude 拆一下
+                让 Agent 拆一下
               </button>
             </div>
           )}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
 import { findUpdate } from "../components/Updater";
+import AgentSettings from "../components/AgentSettings";
 import { useApp } from "../ctx";
 import { DEFAULT_REPORT_HEAD, importBundle, type Link } from "../lib/profile";
 import { api, errText, type DataInfo, type MailConfig } from "../lib/api";
@@ -42,13 +43,22 @@ const TABS: [string, string][] = [
   ["me", "个人与作息"],
   ["links", "快捷入口"],
   ["mail", "邮箱"],
-  ["claude", "Claude"],
+  ["agent", "Agent"],
   ["data", "数据与更新"],
 ];
 const lastTab = { v: "me" };
+const wantTab = () => {
+  try {
+    const v = sessionStorage.getItem("lg_set_tab");
+    sessionStorage.removeItem("lg_set_tab");
+    return v;
+  } catch {
+    return null;
+  }
+};
 
 export default function Settings() {
-  const [tab, setTab] = useState(lastTab.v);
+  const [tab, setTab] = useState(() => (lastTab.v = wantTab() ?? lastTab.v));
   const pickTab = (k: string) => {
     lastTab.v = k;
     setTab(k);
@@ -60,8 +70,6 @@ export default function Settings() {
   const [testing, setTesting] = useState(false);
   const [detectLog, setDetectLog] = useState<string[]>([]);
   const [info, setInfo] = useState<DataInfo | null>(null);
-  const [claude, setClaude] = useState<{ found: boolean; path: string | null } | null>(null);
-  const [claudePath, setClaudePath] = useState(settings.claude_path ?? "");
   const [version, setVersion] = useState("");
   const [names, setNames] = useState({ user: profile.name, leader: profile.leader, project: profile.project, join: profile.joinDate, about: profile.about, head: profile.reportHead });
   const [hours, setHours] = useState(() => {
@@ -99,7 +107,6 @@ export default function Settings() {
   useEffect(() => {
     api.mailConfig().then((c) => setCfg({ ...c, login: c.login || c.address, name: c.name || profile.name }));
     api.dataInfo().then(setInfo);
-    api.claudeStatus().then(setClaude);
     getVersion().then(setVersion);
   }, []);
 
@@ -141,11 +148,6 @@ export default function Settings() {
     } finally {
       setTesting(false);
     }
-  };
-
-  const saveClaude = async () => {
-    await setSetting("claude_path", claudePath.trim());
-    setClaude(await api.claudeStatusFresh());
   };
 
   const exportAll = async () => {
@@ -324,21 +326,8 @@ export default function Settings() {
 
       )}
 
-      {tab === "claude" && (
-      <section className="set-sec">
-        <h2>Claude</h2>
-        <div className="small">{claude == null ? "检测中" : claude.found ? "已找到：" + claude.path : "没找到本机的 Claude Code"}</div>
-        <div className="fields">
-          <Field label="claude 路径">
-            <input className="line-input" value={claudePath} onChange={(e) => setClaudePath(e.target.value)} placeholder="留空自动查找" />
-          </Field>
-        </div>
-        <div className="row-btns">
-          <button type="button" className="btn ghost" onClick={saveClaude}>
-            保存并检测
-          </button>
-        </div>
-      </section>
+      {tab === "agent" && (
+      <AgentSettings />
 
       )}
 

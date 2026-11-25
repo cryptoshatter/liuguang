@@ -1,4 +1,4 @@
-mod claude;
+mod agents;
 mod db;
 mod mail;
 mod mailcache;
@@ -90,8 +90,12 @@ pub fn run() {
             store::data_info,
             store::backup_now,
             store::export_all,
-            claude::claude_status,
-            claude::claude_ask,
+            agents::agents_list,
+            agents::agent_api_save,
+            agents::agent_api_delete,
+            agents::agent_models,
+            agents::agent_ask,
+            agents::agent_test,
             mail::mail_config,
             mail::mail_save_config,
             mail::mail_list,

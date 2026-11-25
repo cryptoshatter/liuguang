@@ -125,7 +125,7 @@ export async function runActions(list: Action[], d: RunDeps): Promise<string[]> 
       }
       case "task.edit": {
         if (isToday(id)) {
-          plan.edit!.push({ id, title: str(a.title) || undefined, minutes: Number(a.minutes) || undefined, start: str(a.start) || undefined, end: str(a.end) || undefined, pinned: typeof a.pinned === "boolean" ? a.pinned : undefined });
+          plan.edit!.push({ id, title: str(a.title) || undefined, minutes: Number(a.minutes) || undefined, start: str(a.start) || undefined, end: str(a.end) || undefined });
           planUsed = true;
         } else if (d.cache.has(id)) {
           const t = { ...d.cache.get(id)! };
@@ -154,10 +154,6 @@ export async function runActions(list: Action[], d: RunDeps): Promise<string[]> 
           plan.remove!.push(id);
           planUsed = true;
         } else if (id) await api.taskDelete(id);
-        break;
-      case "task.reflow":
-        plan.reflow = true;
-        planUsed = true;
         break;
       case "plan.redo":
         redo = true;
