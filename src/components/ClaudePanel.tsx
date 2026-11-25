@@ -71,11 +71,6 @@ export default function ClaudePanel({ chat, focus, onClose }: Props) {
       await say(await t.addText(text));
       return;
     }
-    if (t.planned && /^(把没做完的)?(顺延|重排|往后排?)/.test(text) && text.length < 16) {
-      await say(text, "me");
-      await say(await t.reflowNow());
-      return;
-    }
     await talk(text);
   };
 

@@ -20,16 +20,15 @@ export const preamble = (p: Profile, now: Date) =>
 export const taskLines = (tasks: Task[]) =>
   tasks.length
     ? tasks
-        .map((t) => `- [${t.done ? "x" : " "}] ${t.start != null ? fmt(t.start) + "–" + fmt(t.end!) : "未排"} ${t.title}（${t.minutes} 分钟，id=${t.id}${t.pinned ? "，固定" : ""}${t.kind !== "work" ? "，" + t.kind : ""}）`)
+        .map((t) => `- [${t.done ? "x" : " "}] ${t.start != null ? fmt(t.start) + "–" + fmt(t.end!) : "未排"} ${t.title}（${t.minutes} 分钟，id=${t.id}${t.kind !== "work" ? "，" + t.kind : ""}）`)
         .join("\n")
     : "（还没有任务）";
 
 export const ACTIONS_PROTOCOL = `需要改动数据时，在回答最后附一个 \`\`\`json 代码块，内容是 {"actions":[...]}，按顺序执行；不要把动作写进正文，也不要说「已加」之类却不附代码块。可用动作：
 {"do":"task.add","title":"任务名","minutes":60,"start":"15:00","day":"YYYY-MM-DD"}  day 省略为今天；start 省略时自动排进今天的空档
-{"do":"task.edit","id":"任务id","title":"新名字","minutes":30,"start":"10:00","end":"11:00","pinned":true}  只写要改的字段
+{"do":"task.edit","id":"任务id","title":"新名字","minutes":30,"start":"10:00","end":"11:00"}  只写要改的字段；改时间后和它重叠的任务会自动往后让位
 {"do":"task.done","id":"任务id","done":true}
 {"do":"task.remove","id":"任务id"}
-{"do":"task.reflow"}  今天没做完的从现在起往后顺排
 {"do":"plan.redo"}  重新定今日任务
 {"do":"log.add","day":"YYYY-MM-DD","items":["一条日志"]}  给某天记或补日志
 {"do":"log.remove","id":12}
@@ -52,11 +51,10 @@ export const ACTIONS_PROTOCOL = `需要改动数据时，在回答最后附一�
 
 export type PlanActions = {
   add?: { title: string; minutes?: number; start?: string; end?: string }[];
-  edit?: { id: string; title?: string; minutes?: number; start?: string; end?: string; pinned?: boolean }[];
+  edit?: { id: string; title?: string; minutes?: number; start?: string; end?: string }[];
   done?: string[];
   undone?: string[];
   remove?: string[];
-  reflow?: boolean;
 };
 
 function balanced(text: string, start: number): string | null {

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Task } from "./lib/api";
 import { prevWorkday } from "./lib/calendar";
-import { parseQuick, reflow, baseNow, type Quick } from "./lib/plan";
+import { parseQuick, settle, slotAfter, pack, baseNow, fitSpan, snap, type Quick } from "./lib/plan";
 import type { PlanActions } from "./lib/claude";
 import { DAY_END, PM_START, dayKey, fmt, md, parseDay, parseHM, uid } from "./lib/time";
 
@@ -29,6 +29,7 @@ export function useToday(today: string, nowMin: number) {
   const [planned, setPlanned] = useState(false);
   const [cands, setCands] = useState<Cand[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const undo = useRef<Task[][]>([]);
 
   const loadCands = useCallback(
     async (todayTasks: Task[]) => {
@@ -89,15 +90,6 @@ export function useToday(today: string, nowMin: number) {
     [today],
   );
 
-  const runReflow = useCallback(
-    async (list: Task[], from = base) => {
-      const r = reflow(list, from);
-      await commit([...r.tasks, ...r.over]);
-      return r;
-    },
-    [base, commit],
-  );
-
   const planLines = (list: Task[]) =>
     list
       .filter((t) => !t.done && t.start != null)
@@ -107,11 +99,35 @@ export function useToday(today: string, nowMin: number) {
   const overNote = (over: Task[]) => (over.length ? "\n顺到明天：" + over.map((t) => t.title).join("、") : "");
 
   const notDone = async (id: string) => {
-    const list = tasks.map((t) => (t.id === id ? { ...t, done: false, doneAt: null, pinned: false, start: null, end: null } : t));
-    const r = await runReflow(list, Math.max(base, Math.ceil(nowMin / 10) * 10));
-    const x = r.tasks.find((t) => t.id === id);
-    const name = tasks.find((t) => t.id === id)?.title ?? "";
-    return x ? `「${name}」顺到 ${fmt(x.start!)}–${fmt(x.end!)}。` : `「${name}」今天放不下，顺到明天。`;
+    const me = tasks.find((t) => t.id === id);
+    if (!me) return "";
+    const slot = slotAfter(tasks, me.minutes, Math.max(base, snap(nowMin + 2)), id);
+    await commit([{ ...me, done: false, doneAt: null, start: slot?.[0] ?? null, end: slot?.[1] ?? null }]);
+    return slot ? `「${me.title}」放到 ${fmt(slot[0])}–${fmt(slot[1])}。` : `「${me.title}」今天放不下，顺到明天。`;
+  };
+
+  const move = async (id: string, s: number, e: number) => {
+    const r = settle(tasks, id, s, e);
+    if (!r.ok) return false;
+    const before = new Map(tasks.map((t) => [t.id, t]));
+    const changed = r.tasks.filter((t) => before.get(t.id) !== t);
+    if (!changed.length) return true;
+    undo.current.push(changed.map((t) => before.get(t.id)!));
+    if (undo.current.length > 30) undo.current.shift();
+    setTasks(r.tasks);
+    await commit(changed);
+    return true;
+  };
+
+  const undoMove = async () => {
+    const prev = undo.current.pop();
+    if (!prev) return false;
+    const ids = new Set(tasks.map((t) => t.id));
+    const back = prev.filter((t) => ids.has(t.id));
+    const m = new Map(back.map((t) => [t.id, t]));
+    setTasks((ts) => ts.map((t) => m.get(t.id) ?? t));
+    await commit(back);
+    return true;
   };
 
   const toggle = async (id: string) => {
@@ -126,37 +142,27 @@ export function useToday(today: string, nowMin: number) {
     setTasks((ts) => ts.filter((t) => t.id !== id));
   };
 
-  const togglePin = async (id: string) => {
-    const t = tasks.find((x) => x.id === id);
-    if (t) await commit([{ ...t, pinned: !t.pinned }]);
-  };
-
   const addQuick = async (q: Quick) => {
     const t = newTask(today, q.title, q.minutes);
     if (q.start != null) {
-      t.start = q.start;
-      t.end = q.end ?? q.start + q.minutes;
-      t.pinned = true;
+      const [s, e] = fitSpan(q.start, (q.end ?? q.start + q.minutes) - q.start);
+      const r = settle([...tasks, { ...t, start: s, end: e }], t.id, s, e);
+      if (r.ok) {
+        await commit(r.tasks.filter((x) => x.id === t.id || tasks.find((y) => y.id === x.id) !== x));
+        return `「${t.title}」${fmt(s)}–${fmt(e)}。`;
+      }
     }
-    const r = await runReflow([...tasks, t], q.pm ? Math.max(base, PM_START) : base);
-    const placed = r.tasks.find((x) => x.id === t.id);
-    const rest = r.over.filter((x) => x.id !== t.id);
-    return (placed ? `「${t.title}」${fmt(placed.start!)}–${fmt(placed.end!)}。` : `「${t.title}」今天放不下，顺到明天。`) + overNote(rest);
+    const slot = slotAfter(tasks, t.minutes, q.pm ? Math.max(base, PM_START) : base);
+    await commit([{ ...t, start: slot?.[0] ?? null, end: slot?.[1] ?? null }]);
+    return slot ? `「${t.title}」${fmt(slot[0])}–${fmt(slot[1])}。` : `「${t.title}」今天放不下，顺到明天。`;
   };
 
   const addText = (text: string) => addQuick(parseQuick(text));
-
-  const reflowNow = async () => {
-    const r = await runReflow(tasks);
-    const lines = planLines(r.tasks);
-    return (lines ? `已顺延：\n${lines}` : "没有要顺延的。") + overNote(r.over);
-  };
 
   const ensureLog = (list: Task[]) => {
     if (list.some((t) => t.kind === "log")) return list;
     const log = newTask(today, LOG_TITLE, 20);
     log.kind = "log";
-    log.pinned = true;
     log.start = DAY_END - 20;
     log.end = DAY_END;
     return [...list, log];
@@ -168,18 +174,17 @@ export function useToday(today: string, nowMin: number) {
       ? (order.map((o) => picked.find((c) => c.id === o.id) && { ...picked.find((c) => c.id === o.id)!, minutes: o.minutes }).filter(Boolean) as Cand[])
       : picked;
     const missing = picked.filter((c) => !seq.some((s) => s.id === c.id));
-    const chosen = [...seq, ...missing].map((c, i) => ({
+    const chosen = [...seq, ...missing].map((c) => ({
       ...(c.task ?? newTask(today, c.title, c.minutes)),
       day: today,
       title: c.title,
       minutes: c.minutes,
-      start: 2000 + i,
-      end: 2000 + i + c.minutes,
-      pinned: false,
+      start: null,
+      end: null,
     }));
     const dropped = cands.filter((c) => !c.pick && c.task && c.task.day === today).map((c) => ({ ...c.task!, day: null, start: null, end: null }));
-    const keep = tasks.filter((t) => t.done || t.kind !== "work" || (t.pinned && t.start != null));
-    const r = reflow(ensureLog([...keep, ...chosen]), base);
+    const keep = ensureLog(tasks.filter((t) => t.done || t.kind !== "work")).filter((t) => t.start != null);
+    const r = pack(keep, chosen, base);
     await api.tasksSave([...r.tasks, ...r.over, ...dropped]);
     await api.daySetPlanned(today, true);
     setPlanned(true);
@@ -211,47 +216,39 @@ export function useToday(today: string, nowMin: number) {
 
   const applyActions = async (a: PlanActions) => {
     let list = tasks.slice();
-    const added: string[] = [];
-    let needFlow = !!a.reflow;
+    const touched: string[] = [];
+    const put = (t: Task, s: number | null, e: number | null) => {
+      if (s == null) {
+        const slot = slotAfter(list, t.minutes, base, t.id);
+        const n = { ...t, start: slot?.[0] ?? null, end: slot?.[1] ?? null };
+        list = list.some((x) => x.id === t.id) ? list.map((x) => (x.id === t.id ? n : x)) : [...list, n];
+        return;
+      }
+      const [fs, fe] = fitSpan(s, (e != null && e > s ? e : s + t.minutes) - s);
+      const base0 = list.some((x) => x.id === t.id) ? list.map((x) => (x.id === t.id ? t : x)) : [...list, t];
+      const r = settle(base0, t.id, fs, fe);
+      if (r.ok) list = r.tasks;
+      else if (!list.some((x) => x.id === t.id)) list = [...list, { ...t, start: null, end: null }];
+    };
     for (const add of a.add ?? []) {
       if (!add?.title) continue;
       const t = newTask(today, String(add.title), Math.max(10, Math.round(Number(add.minutes) || 30)));
-      const s = add.start ? parseHM(add.start) : null;
-      if (s != null) {
-        const e = add.end ? parseHM(add.end) : null;
-        t.start = s;
-        t.end = e != null && e > s ? e : s + t.minutes;
-        t.minutes = t.end - s;
-        t.pinned = true;
-      } else needFlow = true;
-      added.push(t.id);
-      list.push(t);
+      put(t, add.start ? parseHM(add.start) : null, add.end ? parseHM(add.end) : null);
+      touched.push(t.id);
     }
     for (const ed of a.edit ?? []) {
-      list = list.map((t) => {
-        if (t.id !== String(ed.id)) return t;
-        const n = { ...t };
-        if (ed.title) n.title = String(ed.title);
-        if (ed.pinned != null) n.pinned = !!ed.pinned;
-        const s = ed.start ? parseHM(ed.start) : null;
-        const e = ed.end ? parseHM(ed.end) : null;
-        const m = ed.minutes ? Math.max(10, Math.round(Number(ed.minutes))) : null;
-        if (m) n.minutes = m;
-        if (s != null) {
-          n.start = s;
-          n.end = e != null && e > s ? e : s + n.minutes;
-          n.minutes = n.end - s;
-          n.pinned = ed.pinned ?? true;
-        } else if (e != null && n.start != null && e > n.start) {
-          n.end = e;
-          n.minutes = e - n.start;
-        } else if (m && n.start != null) {
-          n.end = n.start + m;
-          needFlow = true;
-        }
-        added.push(n.id);
-        return n;
-      });
+      const cur = list.find((t) => t.id === String(ed.id));
+      if (!cur) continue;
+      const n = { ...cur };
+      if (ed.title) n.title = String(ed.title);
+      const m = ed.minutes ? Math.max(10, Math.round(Number(ed.minutes))) : null;
+      if (m) n.minutes = m;
+      const s = ed.start ? parseHM(ed.start) : null;
+      const e = ed.end ? parseHM(ed.end) : null;
+      list = list.map((t) => (t.id === n.id ? n : t));
+      if (s != null) put(n, s, e ?? (m ? s + m : null));
+      else if (n.start != null && (e != null || m)) put(n, n.start, e != null && e > n.start ? e : n.start + n.minutes);
+      touched.push(n.id);
     }
     const ids = (xs?: string[]) => new Set((xs ?? []).map(String));
     const done = ids(a.done);
@@ -267,16 +264,12 @@ export function useToday(today: string, nowMin: number) {
             ? { ...t, done: false, doneAt: null }
             : t,
       );
-    if (needFlow) {
-      const r = reflow(list, base);
-      list = [...r.tasks, ...r.over];
-    }
     await commit(list);
     if (!planned && list.some((t) => t.kind === "work" && t.start != null)) {
       await api.daySetPlanned(today, true);
       setPlanned(true);
     }
-    return [...added, ...done, ...undone];
+    return [...touched, ...done, ...undone];
   };
 
   return {
@@ -291,9 +284,9 @@ export function useToday(today: string, nowMin: number) {
     toggle,
     notDone,
     remove,
-    togglePin,
+    move,
+    undoMove,
     addText,
-    reflowNow,
     confirmPlan,
     replan,
     setCand,
