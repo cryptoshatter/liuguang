@@ -52,6 +52,17 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE chat ADD COLUMN agent TEXT;
     ALTER TABLE chat ADD COLUMN meta TEXT;
     "#,
+    r#"
+    CREATE TABLE contacts (
+        email TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '',
+        dept TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'mail',
+        seen INTEGER NOT NULL DEFAULT 0,
+        uses INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+    );
+    "#,
 ];
 
 pub fn now() -> String {

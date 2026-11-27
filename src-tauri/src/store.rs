@@ -412,7 +412,7 @@ pub fn export_all(state: State<AppState>, markdown: String) -> R<String> {
         .join(chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string());
     fs::create_dir_all(&base).map_err(e)?;
     let mut all = serde_json::Map::new();
-    for t in ["tasks", "day_plans", "notes", "reports", "onboarding", "goals", "chat", "settings"] {
+    for t in ["tasks", "day_plans", "notes", "reports", "onboarding", "goals", "chat", "contacts", "settings"] {
         all.insert(t.to_string(), table_json(&c, t)?);
     }
     fs::write(

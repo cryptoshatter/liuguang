@@ -69,6 +69,8 @@ export default function Settings() {
   const [mailMsg, setMailMsg] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [detectLog, setDetectLog] = useState<string[]>([]);
+  const [dirHost, setDirHost] = useState(settings.mail_dir_host ?? "");
+  const [dirAuto, setDirAuto] = useState("");
   const [info, setInfo] = useState<DataInfo | null>(null);
   const [version, setVersion] = useState("");
   const [names, setNames] = useState({ user: profile.name, leader: profile.leader, project: profile.project, join: profile.joinDate, about: profile.about, head: profile.reportHead });
@@ -106,6 +108,7 @@ export default function Settings() {
 
   useEffect(() => {
     api.mailConfig().then((c) => setCfg({ ...c, login: c.login || c.address, name: c.name || profile.name }));
+    api.contactsHost().then(setDirAuto).catch(() => undefined);
     api.dataInfo().then(setInfo);
     getVersion().then(setVersion);
   }, []);
@@ -123,6 +126,19 @@ export default function Settings() {
         setMailMsg(await api.mailTest());
         refreshMail();
       } else setMailMsg("已保存。");
+    } catch (e) {
+      setMailMsg("※ " + errText(e));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const testDir = async () => {
+    setMailMsg(null);
+    setTesting(true);
+    try {
+      if (dirHost.trim() !== (settings.mail_dir_host ?? "")) await setSetting("mail_dir_host", dirHost.trim());
+      setMailMsg(await api.contactsTest());
     } catch (e) {
       setMailMsg("※ " + errText(e));
     } finally {
@@ -294,6 +310,15 @@ export default function Settings() {
                   </select>
                 </div>
               </Field>
+              <Field label="公司通讯录">
+                <input
+                  className="line-input"
+                  value={dirHost}
+                  placeholder={dirAuto}
+                  onChange={(e) => setDirHost(e.target.value)}
+                  onBlur={() => dirHost.trim() !== (settings.mail_dir_host ?? "") && setSetting("mail_dir_host", dirHost.trim())}
+                />
+              </Field>
             </div>
             <label className="checkline small">
               <input type="checkbox" checked={cfg.insecure} onChange={(e) => setCfg({ ...cfg, insecure: e.target.checked })} />
@@ -308,6 +333,9 @@ export default function Settings() {
               </button>
               <button type="button" className="btn ghost" onClick={() => saveMail(false)}>
                 只保存
+              </button>
+              <button type="button" className="btn ghost" onClick={testDir} disabled={testing}>
+                测试通讯录
               </button>
             </div>
             {mailMsg && <div className={"small" + (mailMsg.startsWith("※") ? " red" : " ink2")}>{mailMsg}</div>}

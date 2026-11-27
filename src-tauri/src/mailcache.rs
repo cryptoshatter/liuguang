@@ -107,6 +107,19 @@ pub fn put_folders(dir: &Path, acct: &str, data: &str) {
     }
 }
 
+pub fn harvest_rows(dir: &Path) -> (Vec<String>, Vec<Vec<u8>>) {
+    let Some(c) = open(dir) else { return (vec![], vec![]) };
+    let summaries = c
+        .prepare("SELECT data FROM summary")
+        .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.flatten().collect()))
+        .unwrap_or_default();
+    let heads = c
+        .prepare("SELECT substr(raw, 1, 16384) FROM body")
+        .and_then(|mut st| st.query_map([], |r| r.get::<_, Vec<u8>>(0)).map(|rows| rows.flatten().collect()))
+        .unwrap_or_default();
+    (summaries, heads)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
