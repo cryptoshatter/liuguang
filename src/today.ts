@@ -217,6 +217,7 @@ export function useToday(today: string, nowMin: number) {
   const applyActions = async (a: PlanActions) => {
     let list = tasks.slice();
     const touched: string[] = [];
+    const locked = new Set<string>();
     const put = (t: Task, s: number | null, e: number | null) => {
       if (s == null) {
         const slot = slotAfter(list, t.minutes, base, t.id);
@@ -226,16 +227,17 @@ export function useToday(today: string, nowMin: number) {
       }
       const [fs, fe] = fitSpan(s, (e != null && e > s ? e : s + t.minutes) - s);
       const base0 = list.some((x) => x.id === t.id) ? list.map((x) => (x.id === t.id ? t : x)) : [...list, t];
-      const r = settle(base0, t.id, fs, fe);
-      if (r.ok) list = r.tasks;
-      else if (!list.some((x) => x.id === t.id)) list = [...list, { ...t, start: null, end: null }];
+      const r = settle(base0, t.id, fs, fe, { locked, evict: true });
+      if (r.ok) {
+        list = r.tasks;
+        locked.add(t.id);
+        return;
+      }
+      const slot = slotAfter(base0, fe - fs, fs, t.id) ?? slotAfter(base0, t.minutes, base, t.id);
+      const n = { ...t, start: slot?.[0] ?? null, end: slot?.[1] ?? null };
+      list = base0.map((x) => (x.id === t.id ? n : x));
+      if (slot) locked.add(t.id);
     };
-    for (const add of a.add ?? []) {
-      if (!add?.title) continue;
-      const t = newTask(today, String(add.title), Math.max(10, Math.round(Number(add.minutes) || 30)));
-      put(t, add.start ? parseHM(add.start) : null, add.end ? parseHM(add.end) : null);
-      touched.push(t.id);
-    }
     for (const ed of a.edit ?? []) {
       const cur = list.find((t) => t.id === String(ed.id));
       if (!cur) continue;
@@ -249,6 +251,12 @@ export function useToday(today: string, nowMin: number) {
       if (s != null) put(n, s, e ?? (m ? s + m : null));
       else if (n.start != null && (e != null || m)) put(n, n.start, e != null && e > n.start ? e : n.start + n.minutes);
       touched.push(n.id);
+    }
+    for (const add of a.add ?? []) {
+      if (!add?.title) continue;
+      const t = newTask(today, String(add.title), Math.max(10, Math.round(Number(add.minutes) || 30)));
+      put(t, add.start ? parseHM(add.start) : null, add.end ? parseHM(add.end) : null);
+      touched.push(t.id);
     }
     const ids = (xs?: string[]) => new Set((xs ?? []).map(String));
     const done = ids(a.done);

@@ -37,15 +37,17 @@ export function fitSpan(s: number, d: number): Span {
   return [s, s + d];
 }
 
-export function settle(list: Task[], id: string, s: number, e: number): { tasks: Task[]; ok: boolean } {
+export function settle(list: Task[], id: string, s: number, e: number, opt?: { locked?: Set<string>; evict?: boolean }): { tasks: Task[]; ok: boolean } {
   const me = list.find((t) => t.id === id);
   if (!me) return { tasks: list, ok: false };
+  const locked = opt?.locked;
+  const held = (t: Task) => t.done || (locked?.has(t.id) ?? false);
   const moved: Task = { ...me, start: s, end: e, minutes: e - s };
-  const fixed: Span[] = list.filter((t) => t.id !== id && t.done && t.start != null).map((t) => [t.start!, t.end!]);
+  const fixed: Span[] = list.filter((t) => t.id !== id && held(t) && t.start != null).map((t) => [t.start!, t.end!]);
   fixed.push([LUNCH_START, PM_START]);
   let ok = s >= AM_START && e <= DAY_END && !hitOf(fixed, s, e);
   const spans: Span[] = [...fixed, [s, e]];
-  const rest = list.filter((t) => t.id !== id && !t.done && t.start != null).sort((a, b) => a.start! - b.start!);
+  const rest = list.filter((t) => t.id !== id && !held(t) && t.start != null).sort((a, b) => a.start! - b.start!);
   const out = new Map<string, Task>([[id, moved]]);
   for (const t of rest) {
     const d = t.end! - t.start!;
@@ -54,7 +56,13 @@ export function settle(list: Task[], id: string, s: number, e: number): { tasks:
       const first = hitOf(spans, x, x + d)!;
       x = freeFrom(spans, Math.max(x, first[1]), d);
     }
-    if (x + d > DAY_END) ok = false;
+    if (x + d > DAY_END) {
+      if (opt?.evict) {
+        out.set(t.id, { ...t, start: null, end: null });
+        continue;
+      }
+      ok = false;
+    }
     spans.push([x, x + d]);
     out.set(t.id, x === t.start ? t : { ...t, start: x, end: x + d });
   }
