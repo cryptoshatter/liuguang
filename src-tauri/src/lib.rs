@@ -1,5 +1,7 @@
 mod agents;
+mod contacts;
 mod db;
+mod eas;
 mod mail;
 mod mailcache;
 mod store;
@@ -109,6 +111,11 @@ pub fn run() {
             mail::mail_send,
             mail::mail_test,
             mail::mail_detect,
+            contacts::contacts_search,
+            contacts::contacts_harvest,
+            contacts::contacts_directory,
+            contacts::contacts_host,
+            contacts::contacts_test,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

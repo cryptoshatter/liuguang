@@ -32,6 +32,8 @@ export type AgentInfo = {
   hasKey: boolean;
 };
 export type ApiAgent = { id: string; name: string; kind: "openai" | "anthropic"; base: string; model: string; models: string[] };
+export type Contact = { name: string; email: string; dept: string };
+
 export type MailConfig = {
   address: string;
   login: string;
@@ -129,6 +131,11 @@ export const api = {
   mailSend: (mail: { to: string[]; cc: string[]; subject: string; body: string; inReplyTo: string | null; references: string[] }) =>
     invoke<void>("mail_send", { mail }),
   mailTest: () => invoke<string>("mail_test"),
+  contactsSearch: (q: string) => invoke<Contact[]>("contacts_search", { q }),
+  contactsDirectory: (q: string) => invoke<Contact[]>("contacts_directory", { q }),
+  contactsHarvest: () => invoke<number>("contacts_harvest"),
+  contactsHost: () => invoke<string>("contacts_host"),
+  contactsTest: () => invoke<string>("contacts_test"),
   mailDetect: () => invoke<{ ok: boolean; summary: string; log: string[]; config: MailConfig }>("mail_detect"),
 };
 

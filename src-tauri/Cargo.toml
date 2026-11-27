@@ -29,7 +29,7 @@ encoding_rs = "0.8"
 base64 = "0.22"
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "native-tls", "hostname"] }
 dirs = "6"
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "2", features = ["json", "native-tls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }

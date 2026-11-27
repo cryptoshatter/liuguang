@@ -53,7 +53,24 @@ fn password(account: &str) -> Result<String, String> {
     Ok(p)
 }
 
+pub(crate) fn secret(account: &str) -> Result<String, String> {
+    password(account)
+}
+
+pub(crate) fn own_address(state: &State<'_, AppState>) -> String {
+    load_config(state).map(|c| c.address).unwrap_or_default()
+}
+
+pub(crate) fn directory_account(state: &State<'_, AppState>) -> Result<(String, String), String> {
+    let c = load_config(state)?;
+    if c.login.is_empty() {
+        return Err("请先在设置里填写邮箱".into());
+    }
+    Ok((c.login, c.imap_host))
+}
+
 fn reset_session() {
+    crate::eas::reset();
     if let Ok(mut g) = PASS.lock() {
         *g = None;
     }
@@ -599,7 +616,7 @@ fn decode_mutf7(s: &str) -> String {
     out
 }
 
-fn fix_headers(raw: &[u8]) -> Vec<u8> {
+pub(crate) fn fix_headers(raw: &[u8]) -> Vec<u8> {
     let end = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -1140,6 +1157,12 @@ fn sent_folder(s: &mut Imap) -> Option<String> {
     fallback
 }
 
+fn mailbox(s: &str) -> Option<Mailbox> {
+    let (name, email) = crate::contacts::split_mailbox(s)?;
+    let addr = email.parse().ok()?;
+    Some(Mailbox::new((!name.is_empty()).then_some(name), addr))
+}
+
 fn send_blocking(cfg: MailConfig, o: Outgoing) -> Result<(), String> {
     if cfg.address.is_empty() {
         return Err("请先在设置里填写邮箱地址".into());
@@ -1153,10 +1176,10 @@ fn send_blocking(cfg: MailConfig, o: Outgoing) -> Result<(), String> {
     .map_err(|e: lettre::address::AddressError| e.to_string())?;
     let mut b = Message::builder().from(from).subject(o.subject.clone());
     for t in o.to.iter().filter(|s| !s.trim().is_empty()) {
-        b = b.to(t.trim().parse().map_err(|_| format!("收件人地址不对：{}", t))?);
+        b = b.to(mailbox(t).ok_or_else(|| format!("收件人地址不对：{}", t))?);
     }
     for t in o.cc.iter().filter(|s| !s.trim().is_empty()) {
-        b = b.cc(t.trim().parse().map_err(|_| format!("抄送地址不对：{}", t))?);
+        b = b.cc(mailbox(t).ok_or_else(|| format!("抄送地址不对：{}", t))?);
     }
     if let Some(id) = &o.in_reply_to {
         b = b.in_reply_to(id.clone());
@@ -1188,9 +1211,14 @@ fn send_blocking(cfg: MailConfig, o: Outgoing) -> Result<(), String> {
 #[tauri::command]
 pub async fn mail_send(state: State<'_, AppState>, mail: Outgoing) -> Result<(), String> {
     let cfg = load_config(&state)?;
+    let sent: Vec<String> = mail.to.iter().chain(mail.cc.iter()).cloned().collect();
     blocking(move || send_blocking(cfg, mail))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())??;
+    if let Ok(c) = state.conn.lock() {
+        crate::contacts::record_sent(&c, &sent);
+    }
+    Ok(())
 }
 
 #[tauri::command]

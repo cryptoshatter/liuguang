@@ -3,6 +3,7 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useApp, useFocus } from "../ctx";
 import { api, errText, type MailConfig, type MailDetail, type MailFolder, type MailSummary } from "../lib/api";
 import { redact } from "../lib/claude";
+import AddrInput, { harvestContacts } from "../components/AddrInput";
 import { dayKey, pad } from "../lib/time";
 
 const when = (ts: number, now: Date, full = false) => {
@@ -33,7 +34,11 @@ function Avatar({ name, addr, size = 34 }: { name: string; addr: string; size?: 
 
 type Compose = { kind: "new" | "reply" | "all" | "fwd"; to: string; cc: string; subject: string; body: string; inReplyTo: string | null; references: string[]; quote: string };
 const emptyCompose = (): Compose => ({ kind: "new", to: "", cc: "", subject: "", body: "", inReplyTo: null, references: [], quote: "" });
-const splitAddrs = (s: string) => s.split(/[,，;；\s]+/).filter(Boolean);
+const splitAddrs = (s: string) =>
+  s
+    .split(/[,，;；\n]+/)
+    .flatMap((t) => (t.includes("<") ? [t.trim()] : t.split(/\s+/)))
+    .filter(Boolean);
 const ICON: Record<string, string> = { inbox: "收", drafts: "稿", sent: "发", trash: "删", junk: "垃", other: "夹" };
 
 const frameDoc = (html: string) =>
@@ -95,6 +100,10 @@ export default function Mail() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [compose, setCompose] = useState<Compose | null>(null);
   const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    if (compose) harvestContacts();
+  }, [!!compose]);
 
   const cur = folders.find((f) => f.name === folder);
   const isSent = cur?.role === "sent" || cur?.role === "drafts";
@@ -406,14 +415,8 @@ export default function Mail() {
               </button>
             </div>
             <div className="mc-fields">
-              <label className="mc-row">
-                <span>收件人</span>
-                <input value={compose.to} onChange={(e) => setCompose({ ...compose, to: e.target.value })} />
-              </label>
-              <label className="mc-row">
-                <span>抄送</span>
-                <input value={compose.cc} onChange={(e) => setCompose({ ...compose, cc: e.target.value })} />
-              </label>
+              <AddrInput label="收件人" value={compose.to} onChange={(to) => setCompose((c) => (c ? { ...c, to } : c))} />
+              <AddrInput label="抄送" value={compose.cc} onChange={(cc) => setCompose((c) => (c ? { ...c, cc } : c))} />
               <label className="mc-row">
                 <span>主题</span>
                 <input value={compose.subject} onChange={(e) => setCompose({ ...compose, subject: e.target.value })} />

@@ -2544,6 +2544,79 @@ textarea.ruled {
   outline: none;
 }
 
+.mc-row.addr {
+  position: relative;
+}
+
+.addr-pop {
+  position: absolute;
+  z-index: 30;
+  top: 100%;
+  left: 60px;
+  right: -6px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 4px 0;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  box-shadow: 0 10px 28px rgba(31, 29, 26, 0.14);
+  animation: addr-in 0.14s ease-out;
+}
+
+@keyframes addr-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.mc-row > span {
+  flex-shrink: 0;
+}
+
+.mc-row input {
+  min-width: 0;
+}
+
+.addr-opt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 2px;
+  padding: 6px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.addr-opt.on {
+  background: var(--paper-2);
+  box-shadow: inset 2px 0 0 var(--red);
+}
+
+.mc-row .addr-opt span {
+  width: auto;
+  font-size: inherit;
+}
+
+.mc-row .addr-opt .addr-name {
+  color: var(--ink);
+}
+
+.mc-row .addr-opt .addr-dept {
+  color: var(--ink-3);
+}
+
+.mc-row .addr-opt .addr-mail {
+  flex-basis: 100%;
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mc-body {
   flex: 1;
   min-height: 160px;
